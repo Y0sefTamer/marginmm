@@ -4,63 +4,70 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-
 import {MarginMMPricing} from "./MarginMMPricing.sol";
+
+// 1. Import the official 1inch SwapVM/Aqua interface
+import {IAquaPosition} from "./interfaces/IAquaPosition.sol";
 
 /**
  * @title MarginMM Aqua Position
- * @dev This is the main Vault contract that interacts with 1inch/Aqua.
- * It holds liquidity and uses MarginMMPricing to quote dynamic fees.
+ * @dev Implements a sophisticated DeFi position as a custom SwapVM instruction.
+ * This Vault holds liquidity and dynamically prices marginal liquidation risk
+ * on every trade utilizing the MarginMMPricing Risk Engine.
  */
-contract MarginMMAquaPosition is Ownable {
+contract MarginMMAquaPosition is Ownable, IAquaPosition {
     using SafeERC20 for IERC20;
 
     MarginMMPricing public pricingEngine;
-    IERC20 public asset; // The token this vault holds (e.g., USDC)
+    IERC20 public asset;
 
     /**
-     * @dev Constructor sets the owner, the pricing engine, and the asset token.
+     * @notice Initializes the Vault with the Pricing Engine and the underlying asset.
      */
     constructor(address _pricingEngine, address _asset, address _initialOwner) Ownable(_initialOwner) {
-        require(_pricingEngine != address(0) && _asset != address(0), "Zero address");
+        require(_pricingEngine != address(0) && _asset != address(0), "MarginMM: Zero address");
         pricingEngine = MarginMMPricing(_pricingEngine);
         asset = IERC20(_asset);
     }
 
+    /**
+     * @notice Allows Liquidity Providers (Makers) to deposit assets into the Vault.
+     * @param amount The amount of tokens to deposit.
+     */
     function depositLiquidity(uint256 amount) external {
         asset.safeTransferFrom(msg.sender, address(this), amount);
     }
 
     /**
-     * @notice Executes a swap requested by 1inch SwapVM/Taker.
-     * @param simulatedNewHF The projected HF (passed by off-chain logic or solver).
-     * @param requestedAmount The amount of asset the taker wants to buy.
-     * @param taker The address of the user/solver executing the swap.
-     * @return netAmountOut The actual amount sent to the taker after dynamic fees.
+     * @notice The core execution function invoked by the 1inch SwapVM engine.
+     * @dev Decodes solver data, calculates dynamic risk premiums, and finalizes the swap.
+     * @inheritdoc IAquaPosition
      */
-    function executeAquaSwap(uint256 simulatedNewHF, uint256 requestedAmount, address taker)
-        external
-        returns (uint256 netAmountOut)
-    {
-        // 1. Check if Vault has enough liquidity
+    function executeSwapInstruction(
+        address taker,
+        address tokenOut,
+        uint256 requestedAmount,
+        bytes calldata instructionData
+    ) external override returns (uint256 netAmountOut) {
+        // Step 1: Ensure the Vault holds sufficient liquidity and the correct asset is requested
         require(asset.balanceOf(address(this)) >= requestedAmount, "MarginMM: Insufficient liquidity");
+        require(tokenOut == address(asset), "MarginMM: Asset mismatch");
 
-        // 2. Consult the Pricing Engine for the dynamic fee
-        // We pass the simulated HF and the asset address to get the specific fee in basis points (bps)
-        uint256 feeBps = pricingEngine.calculateDynamicFee(simulatedNewHF, address(asset));
+        // Step 2: Decode the payload passed by the SwapVM solver.
+        // In our architecture, the solver passes the simulated Post-Trade Health Factor.
+        uint256 simulatedNewHF = abi.decode(instructionData, (uint256));
 
-        // 3. Calculate actual fee amount
-        // 10000 bps = 100%. Example: (1000 USDC * 30 bps) / 10000 = 3 USDC fee
+        // Step 3: Consult the Risk Engine to calculate the dynamic fee (in basis points)
+        uint256 feeBps = pricingEngine.calculateDynamicFee(simulatedNewHF, tokenOut);
+
+        // Calculate the absolute fee amount (10000 bps = 100%)
         uint256 feeAmount = (requestedAmount * feeBps) / 10000;
 
-        // 4. Calculate net amount for the taker
+        // Step 4: Calculate the net amount for the taker
         netAmountOut = requestedAmount - feeAmount;
 
-        // 5. Transfer the net amount to the taker
-        // SafeERC20 ensures the transfer doesn't fail silently
+        // Step 5: Transfer the net amount to the taker.
+        // Note: The `feeAmount` remains in the contract as accrued yield for the LPs.
         asset.safeTransfer(taker, netAmountOut);
-
-        // NOTE: The feeAmount remains inside this contract (the Vault)
-        // as profit (Yield) for the Market Makers / Liquidity Providers!
     }
 }
