@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import {IPoolDataProvider} from "@aave/core-v3/contracts/interfaces/IPoolDataProvider.sol";
 
-contract MarginMM {
+contract MarginMMPricing {
     // State variable to store the Aave Data Provider contract instance
     IPoolDataProvider public immutable aaveDataProvider;
 
