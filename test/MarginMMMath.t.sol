@@ -130,8 +130,8 @@ contract MarginMMMathTest is Test {
     }
 
     function test_LowLTAssetCanRemoveMoreMarketValue() public {
-        uint256 qHighLt = h.qMax(20_000e8, 10_000e8, 100e18, 1e8, 18, 8_500, config);
-        uint256 qLowLt = h.qMax(20_000e8, 10_000e8, 100e18, 1e8, 18, 6_000, config);
+        uint256 qHighLt = h.qMax(20_000e8, 10_000e8, 100_000e18, 1e8, 18, 8_500, config);
+        uint256 qLowLt = h.qMax(20_000e8, 10_000e8, 100_000e18, 1e8, 18, 6_000, config);
         assertGt(qLowLt, qHighLt);
     }
 
