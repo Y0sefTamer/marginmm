@@ -1,4 +1,7 @@
 {
+  "lib/aave-v3-origin": {
+    "rev": "5c2eb37f39959dd491ba97fdc2af94bb4ee88f41"
+  },
   "lib/forge-std": {
     "tag": {
       "name": "v1.16.2",
@@ -9,6 +12,12 @@
     "tag": {
       "name": "v5.7.0",
       "rev": "cab19933c33c2ad1d4c7a84864a3601dddfd16f3"
+    }
+  },
+  "lib/swap-vm": {
+    "tag": {
+      "name": "v1.0.2",
+      "rev": "32c687c2b73101fc26549e48fa1ff8a4d73afbac"
     }
   }
 }
