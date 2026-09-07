@@ -19,9 +19,9 @@ contract DeployMarginMM is Script {
         vm.startBroadcast(deployerKey);
 
         // Demo defaults: 10% stressed HF floor, 5% collateral haircut, 5% debt shock.
-        riskEngine = new MarginMMRiskEngine(pool, dataProvider, oracle, 1.10e18, 9_500, 10_500);
+        riskEngine = new MarginMMRiskEngine(pool, dataProvider, oracle, 1.1e18, 9_500, 10_500);
         aquaLens = new MarginMMAquaPosition(address(riskEngine));
-        pricing = new MarginMMPricing(1.10e18, 1.50e18, 10, 50);
+        pricing = new MarginMMPricing(1.1e18, 1.5e18, 10, 50);
 
         vm.stopBroadcast();
     }
