@@ -15,10 +15,9 @@ contract MarginMMPricing {
     error InvalidConfig();
 
     constructor(uint256 minStressHF_, uint256 safeStressHF_, uint256 minFeeBps_, uint256 maxFeeBps_) {
-        if (
-            minStressHF_ < WAD || safeStressHF_ <= minStressHF_ || minFeeBps_ > maxFeeBps_
-                || maxFeeBps_ > 1_000
-        ) revert InvalidConfig();
+        if (minStressHF_ < WAD || safeStressHF_ <= minStressHF_ || minFeeBps_ > maxFeeBps_ || maxFeeBps_ > 1_000) {
+            revert InvalidConfig();
+        }
 
         minStressHF = minStressHF_;
         safeStressHF = safeStressHF_;

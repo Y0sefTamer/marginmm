@@ -19,15 +19,11 @@ contract MarginMMRiskEngineTest is Test {
     MarginMMRiskEngine internal engine;
 
     function setUp() public {
-        engine = new MarginMMRiskEngine(POOL, DATA, ORACLE, 1.10e18, 9_500, 10_500);
+        engine = new MarginMMRiskEngine(POOL, DATA, ORACLE, 1.1e18, 9_500, 10_500);
     }
 
     function _mockBaseAccount(uint256 collateralBase, uint256 debtBase, uint256 avgLt, uint256 hf) internal {
-        vm.mockCall(
-            POOL,
-            abi.encodeCall(IPool.getUserEMode, (MAKER)),
-            abi.encode(uint256(0))
-        );
+        vm.mockCall(POOL, abi.encodeCall(IPool.getUserEMode, (MAKER)), abi.encode(uint256(0)));
         vm.mockCall(
             POOL,
             abi.encodeCall(IPool.getUserAccountData, (MAKER)),
@@ -36,11 +32,7 @@ contract MarginMMRiskEngineTest is Test {
     }
 
     function _mockReserve(uint256 balance, uint256 price, uint256 lt, bool userCollateral) internal {
-        vm.mockCall(
-            A_TOKEN,
-            abi.encodeCall(IAToken.UNDERLYING_ASSET_ADDRESS, ()),
-            abi.encode(UNDERLYING)
-        );
+        vm.mockCall(A_TOKEN, abi.encodeCall(IAToken.UNDERLYING_ASSET_ADDRESS, ()), abi.encode(UNDERLYING));
         vm.mockCall(
             DATA,
             abi.encodeCall(IPoolDataProvider.getReserveTokensAddresses, (UNDERLYING)),
@@ -77,11 +69,7 @@ contract MarginMMRiskEngineTest is Test {
                 userCollateral
             )
         );
-        vm.mockCall(
-            ORACLE,
-            abi.encodeCall(IPriceOracleGetter.getAssetPrice, (UNDERLYING)),
-            abi.encode(price)
-        );
+        vm.mockCall(ORACLE, abi.encodeCall(IPriceOracleGetter.getAssetPrice, (UNDERLYING)), abi.encode(price));
     }
 
     function test_SafeCapacityClampsRiskyOutput() public {
@@ -113,11 +101,7 @@ contract MarginMMRiskEngineTest is Test {
     }
 
     function test_EModeFailsClosed() public {
-        vm.mockCall(
-            POOL,
-            abi.encodeCall(IPool.getUserEMode, (MAKER)),
-            abi.encode(uint256(1))
-        );
+        vm.mockCall(POOL, abi.encodeCall(IPool.getUserEMode, (MAKER)), abi.encode(uint256(1)));
 
         vm.expectRevert(abi.encodeWithSelector(MarginMMRiskEngine.UnsupportedEMode.selector, uint256(1)));
         engine.safeCapacity(MAKER, A_TOKEN);
@@ -125,11 +109,7 @@ contract MarginMMRiskEngineTest is Test {
 
     function test_RejectsTokenThatIsNotOfficialReserveAToken() public {
         _mockBaseAccount(25_000e8, 10_000e8, 8_000, 2e18);
-        vm.mockCall(
-            A_TOKEN,
-            abi.encodeCall(IAToken.UNDERLYING_ASSET_ADDRESS, ()),
-            abi.encode(UNDERLYING)
-        );
+        vm.mockCall(A_TOKEN, abi.encodeCall(IAToken.UNDERLYING_ASSET_ADDRESS, ()), abi.encode(UNDERLYING));
         vm.mockCall(
             DATA,
             abi.encodeCall(IPoolDataProvider.getReserveTokensAddresses, (UNDERLYING)),

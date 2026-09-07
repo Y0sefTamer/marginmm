@@ -25,11 +25,7 @@ contract MarginMMMathHarness {
         return MarginMMMath.safeCapacity(weightedCollateral, debt, balance, price, decimals, lt, c);
     }
 
-    function debit(uint256 amount, uint256 price, uint256 decimals, uint256 lt)
-        external
-        pure
-        returns (uint256)
-    {
+    function debit(uint256 amount, uint256 price, uint256 decimals, uint256 lt) external pure returns (uint256) {
         return MarginMMMath.outgoingWeightedBase(amount, price, decimals, lt);
     }
 
@@ -72,11 +68,7 @@ contract MarginMMMathTest is Test {
 
     function setUp() public {
         h = new MarginMMMathHarness();
-        config = MarginMMMath.StressConfig({
-            minStressHF: 1.10e18,
-            collateralStressBps: 9_500,
-            debtStressBps: 10_500
-        });
+        config = MarginMMMath.StressConfig({minStressHF: 1.1e18, collateralStressBps: 9_500, debtStressBps: 10_500});
     }
 
     function test_NoDebt_AllBalanceIsSafe() public {
@@ -119,11 +111,8 @@ contract MarginMMMathTest is Test {
     function test_StrongerStressLowersCapacity() public {
         uint256 q1 = h.qMax(20_000e8, 10_000e8, 10e18, 3_000e8, 18, 8_000, config);
 
-        MarginMMMath.StressConfig memory harsher = MarginMMMath.StressConfig({
-            minStressHF: 1.15e18,
-            collateralStressBps: 9_000,
-            debtStressBps: 11_000
-        });
+        MarginMMMath.StressConfig memory harsher =
+            MarginMMMath.StressConfig({minStressHF: 1.15e18, collateralStressBps: 9_000, debtStressBps: 11_000});
         uint256 q2 = h.qMax(20_000e8, 10_000e8, 10e18, 3_000e8, 18, 8_000, harsher);
 
         assertLt(q2, q1);
@@ -136,37 +125,11 @@ contract MarginMMMathTest is Test {
     }
 
     function test_IncomingEnabledCollateralImprovesPostTradeStressHF() public {
-        uint256 withoutCredit = h.postHF(
-            20_000e8,
-            10_000e8,
-            2e18,
-            2_000e8,
-            18,
-            8_000,
-            true,
-            3_500e6,
-            1e8,
-            6,
-            8_500,
-            false,
-            config
-        );
+        uint256 withoutCredit =
+            h.postHF(20_000e8, 10_000e8, 2e18, 2_000e8, 18, 8_000, true, 3_500e6, 1e8, 6, 8_500, false, config);
 
-        uint256 withCredit = h.postHF(
-            20_000e8,
-            10_000e8,
-            2e18,
-            2_000e8,
-            18,
-            8_000,
-            true,
-            3_500e6,
-            1e8,
-            6,
-            8_500,
-            true,
-            config
-        );
+        uint256 withCredit =
+            h.postHF(20_000e8, 10_000e8, 2e18, 2_000e8, 18, 8_000, true, 3_500e6, 1e8, 6, 8_500, true, config);
 
         assertGt(withCredit, withoutCredit);
     }

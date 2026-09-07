@@ -8,17 +8,17 @@ contract MarginMMPricingTest is Test {
     MarginMMPricing internal pricing;
 
     function setUp() public {
-        pricing = new MarginMMPricing(1.10e18, 1.50e18, 10, 50);
+        pricing = new MarginMMPricing(1.1e18, 1.5e18, 10, 50);
     }
 
     function test_SafeHFGetsMinimumFee() public {
-        assertEq(pricing.calculateDynamicFee(1.50e18), 10);
+        assertEq(pricing.calculateDynamicFee(1.5e18), 10);
         assertEq(pricing.calculateDynamicFee(2e18), 10);
     }
 
     function test_FeeIncreasesAsRiskIncreases() public {
         uint256 safe = pricing.calculateDynamicFee(1.45e18);
-        uint256 riskier = pricing.calculateDynamicFee(1.20e18);
+        uint256 riskier = pricing.calculateDynamicFee(1.2e18);
         assertGt(riskier, safe);
         assertLe(riskier, 50);
     }

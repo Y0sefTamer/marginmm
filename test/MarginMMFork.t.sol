@@ -32,14 +32,8 @@ contract MarginMMForkTest is Test {
         IPoolDataProvider dataProvider = IPoolDataProvider(AAVE_DATA_PROVIDER);
         IPriceOracleGetter oracle = IPriceOracleGetter(AAVE_ORACLE);
 
-        MarginMMRiskEngine engine = new MarginMMRiskEngine(
-            AAVE_POOL,
-            AAVE_DATA_PROVIDER,
-            AAVE_ORACLE,
-            1.10e18,
-            9_500,
-            10_500
-        );
+        MarginMMRiskEngine engine =
+            new MarginMMRiskEngine(AAVE_POOL, AAVE_DATA_PROVIDER, AAVE_ORACLE, 1.1e18, 9_500, 10_500);
 
         address maker = makeAddr("fork-maker");
         address receiver = makeAddr("fork-receiver");
@@ -51,7 +45,7 @@ contract MarginMMForkTest is Test {
         pool.supply(WETH, 20 ether, maker, 0);
         vm.stopPrank();
 
-        (, , uint256 availableBorrowsBase, , , ) = pool.getUserAccountData(maker);
+        (,, uint256 availableBorrowsBase,,,) = pool.getUserAccountData(maker);
         uint256 usdcPrice = oracle.getAssetPrice(USDC);
 
         // Borrow 60% of Aave's currently reported capacity so the test is price-independent.
@@ -62,7 +56,7 @@ contract MarginMMForkTest is Test {
         vm.prank(maker);
         pool.borrow(USDC, borrowAmount, 2, 0, maker);
 
-        (address aWETH, , ) = dataProvider.getReserveTokensAddresses(WETH);
+        (address aWETH,,) = dataProvider.getReserveTokensAddresses(WETH);
         uint256 makerATokenBalance = IERC20(aWETH).balanceOf(maker);
         uint256 qMax = engine.safeCapacity(maker, aWETH);
 
@@ -75,6 +69,6 @@ contract MarginMMForkTest is Test {
 
         assertEq(IERC20(aWETH).balanceOf(receiver), qMax);
         MarginMMRiskEngine.AccountSnapshot memory post = engine.accountSnapshot(maker);
-        assertGe(post.stressHF, 1.10e18);
+        assertGe(post.stressHF, 1.1e18);
     }
 }

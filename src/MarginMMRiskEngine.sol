@@ -73,9 +73,7 @@ contract MarginMMRiskEngine {
         dataProvider = IPoolDataProvider(dataProvider_);
         oracle = IPriceOracleGetter(oracle_);
         stressConfig = MarginMMMath.StressConfig({
-            minStressHF: minStressHF_,
-            collateralStressBps: collateralStressBps_,
-            debtStressBps: debtStressBps_
+            minStressHF: minStressHF_, collateralStressBps: collateralStressBps_, debtStressBps: debtStressBps_
         });
         _validateStoredConfig();
     }
@@ -84,17 +82,10 @@ contract MarginMMRiskEngine {
     function accountSnapshot(address user) public view returns (AccountSnapshot memory snapshot) {
         _requireNoEMode(user);
 
-        (
-            uint256 totalCollateralBase,
-            uint256 totalDebtBase,
-            ,
-            uint256 currentLiquidationThreshold,
-            ,
-            uint256 currentHF
-        ) = pool.getUserAccountData(user);
+        (uint256 totalCollateralBase, uint256 totalDebtBase,, uint256 currentLiquidationThreshold,, uint256 currentHF) =
+            pool.getUserAccountData(user);
 
-        uint256 weighted =
-            MarginMMMath.weightedCollateralBase(totalCollateralBase, currentLiquidationThreshold);
+        uint256 weighted = MarginMMMath.weightedCollateralBase(totalCollateralBase, currentLiquidationThreshold);
 
         snapshot = AccountSnapshot({
             totalCollateralBase: totalCollateralBase,
@@ -119,14 +110,9 @@ contract MarginMMRiskEngine {
         if (officialAToken != aToken || officialAToken == address(0)) revert NotAaveAToken(aToken);
 
         (
-            uint256 decimals,
-            ,
-            uint256 liquidationThreshold,
-            ,
-            ,
-            bool reserveCollateralEnabled,
-            ,
-            ,
+            uint256 decimals,,
+            uint256 liquidationThreshold,,,
+            bool reserveCollateralEnabled,,,
             bool isActive,
             bool isFrozen
         ) = dataProvider.getReserveConfigurationData(underlying);
@@ -134,17 +120,8 @@ contract MarginMMRiskEngine {
         // A frozen reserve may still contain transferable collateral; inactivity is the hard failure here.
         if (!isActive) revert InactiveReserve(underlying);
 
-        (
-            uint256 currentATokenBalance,
-            ,
-            ,
-            ,
-            ,
-            ,
-            ,
-            ,
-            bool usageAsCollateralEnabled
-        ) = dataProvider.getUserReserveData(underlying, user);
+        (uint256 currentATokenBalance,,,,,,,, bool usageAsCollateralEnabled) =
+            dataProvider.getUserReserveData(underlying, user);
 
         snapshot = ReserveSnapshot({
             aToken: aToken,
@@ -217,13 +194,11 @@ contract MarginMMRiskEngine {
     /// @notice Preview final stressed HF for an aToken -> aToken trade.
     /// @dev Incoming collateral is credited only when it is already enabled as collateral for the maker.
     ///      This is reporting/simulation. qMax remains the stricter outgoing-only bound.
-    function previewPostTrade(
-        address maker,
-        address aTokenIn,
-        uint256 amountIn,
-        address aTokenOut,
-        uint256 amountOut
-    ) external view returns (uint256 postTradeStressHF, bool meetsStressGuard) {
+    function previewPostTrade(address maker, address aTokenIn, uint256 amountIn, address aTokenOut, uint256 amountOut)
+        external
+        view
+        returns (uint256 postTradeStressHF, bool meetsStressGuard)
+    {
         AccountSnapshot memory account = accountSnapshot(maker);
         ReserveSnapshot memory inReserve = reserveSnapshot(maker, aTokenIn);
         ReserveSnapshot memory outReserve = reserveSnapshot(maker, aTokenOut);
@@ -254,9 +229,8 @@ contract MarginMMRiskEngine {
     function _validateStoredConfig() internal view {
         MarginMMMath.StressConfig memory config = stressConfig;
         if (
-            config.minStressHF < WAD || config.collateralStressBps == 0
-                || config.collateralStressBps > BPS || config.debtStressBps < BPS
-                || config.debtStressBps > 20_000
+            config.minStressHF < WAD || config.collateralStressBps == 0 || config.collateralStressBps > BPS
+                || config.debtStressBps < BPS || config.debtStressBps > 20_000
         ) revert InvalidStressConfig();
     }
 }

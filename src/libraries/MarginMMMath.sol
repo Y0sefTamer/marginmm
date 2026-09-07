@@ -25,9 +25,8 @@ library MarginMMMath {
 
     function validateConfig(StressConfig memory config) internal pure {
         if (
-            config.minStressHF < WAD || config.collateralStressBps == 0
-                || config.collateralStressBps > BPS || config.debtStressBps < BPS
-                || config.debtStressBps > 20_000
+            config.minStressHF < WAD || config.collateralStressBps == 0 || config.collateralStressBps > BPS
+                || config.debtStressBps < BPS || config.debtStressBps > 20_000
         ) revert InvalidBps();
     }
 
@@ -107,8 +106,7 @@ library MarginMMMath {
         if (totalDebtBase == 0) return 0;
 
         uint256 debt = Math.mulDiv(totalDebtBase, config.debtStressBps, BPS, Math.Rounding.Ceil);
-        uint256 requiredStressedCollateral =
-            Math.mulDiv(config.minStressHF, debt, WAD, Math.Rounding.Ceil);
+        uint256 requiredStressedCollateral = Math.mulDiv(config.minStressHF, debt, WAD, Math.Rounding.Ceil);
         return Math.mulDiv(requiredStressedCollateral, BPS, config.collateralStressBps, Math.Rounding.Ceil);
     }
 
@@ -160,9 +158,7 @@ library MarginMMMath {
         uint256 postWeighted = weightedCollateral;
 
         if (outUsedAsCollateral && amountOut != 0) {
-            uint256 debit = outgoingWeightedBase(
-                amountOut, outPrice, outDecimals, outLiquidationThresholdBps
-            );
+            uint256 debit = outgoingWeightedBase(amountOut, outPrice, outDecimals, outLiquidationThresholdBps);
             if (debit >= postWeighted) postWeighted = 0;
             else postWeighted -= debit;
         }
@@ -170,9 +166,7 @@ library MarginMMMath {
         // Only credit an incoming asset if Aave already marks that reserve as collateral for the maker.
         // This avoids assuming automatic collateral enablement during settlement.
         if (inUsedAsCollateral && amountIn != 0) {
-            postWeighted += incomingWeightedBase(
-                amountIn, inPrice, inDecimals, inLiquidationThresholdBps
-            );
+            postWeighted += incomingWeightedBase(amountIn, inPrice, inDecimals, inLiquidationThresholdBps);
         }
 
         return stressHF(postWeighted, totalDebtBase, config);
