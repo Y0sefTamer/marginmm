@@ -4,8 +4,8 @@ pragma solidity ^0.8.20;
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MarginMMRiskEngine} from "./MarginMMRiskEngine.sol";
 import {SwapVM} from "@1inch/swap-vm/src/SwapVM.sol";
-import {Opcodes} from "@1inch/swap-vm/src/Opcodes.sol";
-import {Context} from "@1inch/swap-vm/src/interfaces/ISwapVM.sol";
+import {Opcodes} from "@1inch/swap-vm/src/opcodes/Opcodes.sol";
+import {Context} from "@1inch/swap-vm/src/libs/VM.sol";
 
 /**
  * @title MarginMM SwapVM Router
