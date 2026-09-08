@@ -2,7 +2,6 @@
 pragma solidity 0.8.30;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {SwapVM} from "@1inch/swap-vm/src/SwapVM.sol";
 import {ISwapVM} from "@1inch/swap-vm/src/interfaces/ISwapVM.sol";
 import {Context} from "@1inch/swap-vm/src/libs/VM.sol";
@@ -13,9 +12,8 @@ import {MarginMMPolicy} from "./MarginMMPolicy.sol";
 import {MarginMMTradeMath} from "./libraries/MarginMMTradeMath.sol";
 
 /// @notice Aqua/SwapVM execution with a mandatory live scenario-capacity instruction.
-/// @dev Output-request mode. Exact pricing/settlement is delegated to official SwapVM;
-/// the bounded amount is passed to its exact-out validator. No arbitrary bytecode/hooks.
-contract MarginMMSwapVMRouter is SwapVM, ReentrancyGuard {
+/// @dev Output-request mode. Exact pricing/settlement is delegated to official SwapVM.
+contract MarginMMSwapVMRouter is SwapVM {
     using TakerTraitsLib for TakerTraits;
     MarginMMScenarioEngine public immutable riskEngine;
     MarginMMPolicy public immutable policy;
@@ -35,19 +33,8 @@ contract MarginMMSwapVMRouter is SwapVM, ReentrancyGuard {
     error InvalidConfiguration();
     error UnsupportedStrategy();
     error UnsupportedPair();
-    error UnsupportedTakerData();
     error PolicyDisabled();
-    error NoCapacity();
-    error MinimumOutputNotMet();
     error RiskBoundMismatch();
-    event RiskChecked(
-        bytes32 indexed strategy,
-        address indexed maker,
-        uint256 requestedOut,
-        uint256 executedOut,
-        uint256 floor,
-        uint256 stressAfter
-    );
 
     constructor(
         address aqua,
@@ -108,56 +95,6 @@ contract MarginMMSwapVMRouter is SwapVM, ReentrancyGuard {
         if (c.stressAfter < c.riskFloor) revert RiskBoundMismatch();
     }
 
-    function quote(
-        ISwapVM.Order calldata order,
-        address tokenIn,
-        address tokenOut,
-        uint256 requestedOut,
-        bytes calldata takerTraitsAndData
-    ) public override returns (uint256 amountIn, uint256 amountOut, bytes32 orderHash) {
-        FillCapacity memory c = capacity(order, tokenIn, tokenOut, requestedOut);
-        _checkTaker(takerTraitsAndData, c);
-        return super.quote(order, tokenIn, tokenOut, c.amountOut, takerTraitsAndData);
-    }
-
-    function swap(
-        ISwapVM.Order calldata order,
-        address tokenIn,
-        address tokenOut,
-        uint256 requestedOut,
-        bytes calldata takerTraitsAndData
-    ) public override nonReentrant returns (uint256 amountIn, uint256 amountOut, bytes32 orderHash) {
-        if (msg.sender == order.maker) revert UnsupportedTakerData();
-        FillCapacity memory c = capacity(order, tokenIn, tokenOut, requestedOut);
-        _checkTaker(takerTraitsAndData, c);
-        (amountIn, amountOut, orderHash) = super.swap(order, tokenIn, tokenOut, c.amountOut, takerTraitsAndData);
-        // Authoritative post-settlement read; a failed guard rolls back BOTH transfers and Aqua accounting.
-        MarginMMScenarioEngine.State memory afterState = riskEngine.snapshot(order.maker);
-        uint256 afterStress = riskEngine.stressHF(afterState);
-        if (afterState.aaveHF <= 1e18 || afterStress < c.riskFloor) revert RiskBoundMismatch();
-        emit RiskChecked(orderHash, order.maker, requestedOut, amountOut, c.riskFloor, afterStress);
-    }
-
-    function _checkTaker(bytes calldata packed, FillCapacity memory c) private pure {
-        if (c.amountOut == 0) revert NoCapacity();
-        (TakerTraits traits, bytes calldata data) = TakerTraitsLib.parse(packed);
-        (bool hasThreshold, uint256 maxIn) = traits.threshold(data);
-        bytes calldata instructionArgs = traits.instructionsArgs(data);
-        if (!hasThreshold || maxIn == 0 || instructionArgs.length != 32) revert UnsupportedTakerData();
-        uint256 minOut = abi.decode(instructionArgs, (uint256));
-        uint40 deadline = traits.deadline(data);
-        if (minOut == 0 || deadline == 0 || keccak256(packed) != keccak256(buildTakerData(maxIn, minOut, deadline))) {
-            revert UnsupportedTakerData();
-        }
-        // aToken source balances may decrease by a normalized-income rounding
-        // unit beyond the nominal transfer amount. The user's max covers it.
-        if (c.amountIn > type(uint256).max - c.inputRounding || c.amountIn + c.inputRounding > maxIn) {
-            revert UnsupportedTakerData();
-        }
-        if (c.amountOut < minOut) revert MinimumOutputNotMet();
-        // Official SwapVM validates maxIn and deadline, including quote calls.
-    }
-
     function _strategy(ISwapVM.Order calldata order, address tokenIn, address tokenOut)
         private
         view
@@ -165,7 +102,7 @@ contract MarginMMSwapVMRouter is SwapVM, ReentrancyGuard {
     {
         if (
             order.maker == address(0) || MakerTraits.unwrap(order.traits) != AQUA_TRAITS || order.data.length != 66
-                || order.data[0] != bytes1(0) || order.data[1] != bytes1(uint8(64))
+            || order.data[0] != bytes1(0) || order.data[1] != bytes1(uint8(64))
         ) {
             revert UnsupportedStrategy();
         }
