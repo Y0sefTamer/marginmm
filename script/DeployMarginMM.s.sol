@@ -2,27 +2,38 @@
 pragma solidity ^0.8.20;
 
 import {Script} from "forge-std/Script.sol";
-import {MarginMMRiskEngine} from "../src/MarginMMRiskEngine.sol";
-import {MarginMMAquaPosition} from "../src/MarginMMAquaPosition.sol";
-import {MarginMMPricing} from "../src/MarginMMPricing.sol";
+import {Aqua} from "@1inch/aqua/src/Aqua.sol";
+import {MarginMMScenarioEngine} from "../src/MarginMMScenarioEngine.sol";
+import {MarginMMPolicy} from "../src/MarginMMPolicy.sol";
+import {MarginMMSwapVMRouter} from "../src/MarginMMSwapVMRouter.sol";
+
+interface IDeployProvider {
+    function getPoolDataProvider() external view returns (address);
+    function getPriceOracle() external view returns (address);
+}
 
 contract DeployMarginMM is Script {
+    address private constant MAINNET_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
+    address private constant MAINNET_PROVIDER = 0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e;
+
     function run()
         external
-        returns (MarginMMRiskEngine riskEngine, MarginMMAquaPosition aquaLens, MarginMMPricing pricing)
+        returns (Aqua aqua, MarginMMScenarioEngine riskEngine, MarginMMPolicy policy, MarginMMSwapVMRouter router)
     {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
-        address pool = vm.envAddress("AAVE_POOL");
-        address dataProvider = vm.envAddress("AAVE_DATA_PROVIDER");
-        address oracle = vm.envAddress("AAVE_ORACLE");
+        address owner = vm.addr(deployerKey);
+        address provider = MAINNET_PROVIDER;
+        address pool = MAINNET_POOL;
+        address dataProvider = IDeployProvider(provider).getPoolDataProvider();
+        address oracle = IDeployProvider(provider).getPriceOracle();
 
         vm.startBroadcast(deployerKey);
-
-        // Demo defaults: 10% stressed HF floor, 5% collateral haircut, 5% debt shock.
-        riskEngine = new MarginMMRiskEngine(pool, dataProvider, oracle, 1.1e18, 9_500, 10_500);
-        aquaLens = new MarginMMAquaPosition(address(riskEngine));
-        pricing = new MarginMMPricing(1.1e18, 1.5e18, 10, 50);
-
+        aqua = new Aqua();
+        riskEngine = new MarginMMScenarioEngine(pool, dataProvider, oracle);
+        policy = new MarginMMPolicy();
+        router = new MarginMMSwapVMRouter(
+            address(aqua), riskEngine.WETH(), address(riskEngine), address(policy), owner, "MarginMM", "1"
+        );
         vm.stopBroadcast();
     }
 }
