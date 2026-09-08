@@ -13,7 +13,7 @@ interface IWETH is IERC20 {
     function deposit() external payable;
 }
 
-/// @notice Optional Ethereum-mainnet fork test. It is skipped when MAINNET_RPC_URL is unset.
+/// @notice Original outgoing-only baseline, pinned to the MVP fork. RPC is required.
 contract MarginMMForkTest is Test {
     address internal constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
     address internal constant AAVE_DATA_PROVIDER = 0x0a16f2FCC0D44FaE41cc54e079281D84A363bECD;
@@ -23,10 +23,7 @@ contract MarginMMForkTest is Test {
     address internal constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
 
     function testFork_qMaxSurvivesRealATokenTransfer() public {
-        string memory rpc = vm.envOr("MAINNET_RPC_URL", string(""));
-        if (bytes(rpc).length == 0) return;
-
-        vm.createSelectFork(rpc);
+        vm.createSelectFork(vm.envString("ETH_RPC_URL"), 25_913_344);
 
         IPool pool = IPool(AAVE_POOL);
         IPoolDataProvider dataProvider = IPoolDataProvider(AAVE_DATA_PROVIDER);
