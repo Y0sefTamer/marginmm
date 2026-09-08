@@ -1,59 +1,199 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.30;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {MarginMMRiskEngine} from "./MarginMMRiskEngine.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {SwapVM} from "@1inch/swap-vm/src/SwapVM.sol";
-import {Opcodes} from "@1inch/swap-vm/src/opcodes/Opcodes.sol";
+import {ISwapVM} from "@1inch/swap-vm/src/interfaces/ISwapVM.sol";
 import {Context} from "@1inch/swap-vm/src/libs/VM.sol";
+import {MakerTraits} from "@1inch/swap-vm/src/libs/MakerTraits.sol";
+import {TakerTraits, TakerTraitsLib} from "@1inch/swap-vm/src/libs/TakerTraits.sol";
+import {MarginMMScenarioEngine} from "./MarginMMScenarioEngine.sol";
+import {MarginMMPolicy} from "./MarginMMPolicy.sol";
+import {MarginMMTradeMath} from "./libraries/MarginMMTradeMath.sol";
 
-/**
- * @title MarginMM SwapVM Router
- * @notice Custom router for 1inch SwapVM that integrates MarginMM's physical safety capacity (qMax).
- */
-contract MarginMMSwapVMRouter is SwapVM, Opcodes {
-    MarginMMRiskEngine public immutable riskEngine;
+/// @notice Aqua/SwapVM execution with a mandatory live scenario-capacity instruction.
+/// @dev Output-request mode. Exact pricing/settlement is delegated to official SwapVM;
+/// the bounded amount is passed to its exact-out validator. No arbitrary bytecode/hooks.
+contract MarginMMSwapVMRouter is SwapVM, ReentrancyGuard {
+    using TakerTraitsLib for TakerTraits;
+    MarginMMScenarioEngine public immutable riskEngine;
+    MarginMMPolicy public immutable policy;
+    uint256 public constant MAX_SPREAD_BPS = 100;
+    uint256 private constant AQUA_TRAITS = 1 << 254;
 
-    error ZeroAddress();
+    struct FillCapacity {
+        uint256 qMax;
+        uint256 amountIn;
+        uint256 amountOut;
+        uint256 stressBefore;
+        uint256 stressAfter;
+        uint256 riskFloor;
+        uint256 inputRounding;
+    }
 
-    /**
-     * @notice Initializes the custom router.
-     * @dev Added `owner` to satisfy the SwapVM (Rescuable) base constructor.
-     */
+    error InvalidConfiguration();
+    error UnsupportedStrategy();
+    error UnsupportedPair();
+    error UnsupportedTakerData();
+    error PolicyDisabled();
+    error NoCapacity();
+    error MinimumOutputNotMet();
+    error RiskBoundMismatch();
+    event RiskChecked(
+        bytes32 indexed strategy,
+        address indexed maker,
+        uint256 requestedOut,
+        uint256 executedOut,
+        uint256 floor,
+        uint256 stressAfter
+    );
+
     constructor(
         address aqua,
         address weth,
         address riskEngine_,
+        address policy_,
         address owner,
         string memory name,
         string memory version
-    ) SwapVM(aqua, weth, owner, name, version) Opcodes(aqua) {
-        if (riskEngine_ == address(0)) revert ZeroAddress();
-        riskEngine = MarginMMRiskEngine(riskEngine_);
-    }
-
-    /**
-     * @notice The Custom MarginMM Instruction: Clamps available output liquidity to the safe qMax.
-     * @dev Mutates `ctx` in-place as expected by 1inch's function pointer definition.
-     */
-    function _executeCapacityClamp(Context memory ctx, bytes calldata /* args */) internal view {
-        uint256 qMax = riskEngine.safeCapacity(ctx.query.maker, ctx.query.tokenOut);
-        ctx.swap.balanceOut = Math.min(ctx.swap.balanceOut, qMax);
-    }
-
-    /**
-     * @notice Overrides the official opcode dispatcher to include MarginMM's clamp instruction.
-     * @dev Must be `pure` and strictly match `function(Context memory, bytes calldata) internal[] memory`.
-     */
-    function _instructions() internal pure override returns (function(Context memory, bytes calldata) internal[] memory opcodesList) {
-        function(Context memory, bytes calldata) internal[] memory standardOpcodes = super._instructions();
-        
-        opcodesList = new function(Context memory, bytes calldata) internal[](standardOpcodes.length + 1);
-        
-        for (uint256 i = 0; i < standardOpcodes.length; i++) {
-            opcodesList[i] = standardOpcodes[i];
+    ) SwapVM(aqua, weth, owner, name, version) {
+        if (aqua.code.length == 0 || riskEngine_.code.length == 0 || policy_.code.length == 0) {
+            revert InvalidConfiguration();
         }
-        
-        opcodesList[standardOpcodes.length] = _executeCapacityClamp;
+        riskEngine = MarginMMScenarioEngine(riskEngine_);
+        policy = MarginMMPolicy(policy_);
+        if (weth != riskEngine.WETH()) revert InvalidConfiguration();
+    }
+
+    function buildOrder(address maker, uint256 spreadBps, bytes32 salt) public pure returns (ISwapVM.Order memory) {
+        if (maker == address(0) || spreadBps > MAX_SPREAD_BPS) revert UnsupportedStrategy();
+        return ISwapVM.Order(
+            maker,
+            MakerTraits.wrap(AQUA_TRAITS),
+            abi.encodePacked(bytes1(0), bytes1(uint8(64)), abi.encode(spreadBps, salt))
+        );
+    }
+
+    function buildTakerData(uint256 maxInput, uint256 minOutput, uint40 deadline) public pure returns (bytes memory) {
+        TakerTraitsLib.Args memory args;
+        args.isFirstTransferFromTaker = true;
+        args.useTransferFromAndAquaPush = true;
+        args.threshold = abi.encode(maxInput);
+        args.deadline = deadline;
+        args.instructionsArgs = abi.encode(minOutput);
+        return TakerTraitsLib.build(args);
+    }
+
+    function capacity(ISwapVM.Order calldata order, address tokenIn, address tokenOut, uint256 requestedOut)
+        public
+        view
+        returns (FillCapacity memory c)
+    {
+        (bool wethIn, uint256 spread) = _strategy(order, tokenIn, tokenOut);
+        bytes32 strategy = hash(order);
+        c.riskFloor = policy.riskFloor(order.maker, strategy);
+        if (c.riskFloor == 0) revert PolicyDisabled();
+        MarginMMScenarioEngine.State memory s = riskEngine.snapshot(order.maker);
+        c.inputRounding = Math.ceilDiv(wethIn ? s.wethIndex : s.usdcIndex, 1e27) + 1;
+        c.stressBefore = riskEngine.stressHF(s);
+        c.stressAfter = c.stressBefore;
+        if (c.stressBefore < c.riskFloor) return c;
+        (, uint256 available) = AQUA.safeBalances(order.maker, address(this), strategy, tokenIn, tokenOut);
+        c.qMax = Math.min(available, MarginMMTradeMath.capacity(s, wethIn, spread, c.riskFloor));
+        c.amountOut = Math.min(requestedOut, c.qMax);
+        if (c.amountOut == 0) return c;
+        c.amountIn = MarginMMTradeMath.inputFor(s, wethIn, c.amountOut, spread);
+        c.stressAfter = riskEngine.preview(s, wethIn, c.amountIn, c.amountOut);
+        if (c.stressAfter < c.riskFloor) revert RiskBoundMismatch();
+    }
+
+    function quote(
+        ISwapVM.Order calldata order,
+        address tokenIn,
+        address tokenOut,
+        uint256 requestedOut,
+        bytes calldata takerTraitsAndData
+    ) public override returns (uint256 amountIn, uint256 amountOut, bytes32 orderHash) {
+        FillCapacity memory c = capacity(order, tokenIn, tokenOut, requestedOut);
+        _checkTaker(takerTraitsAndData, c);
+        return super.quote(order, tokenIn, tokenOut, c.amountOut, takerTraitsAndData);
+    }
+
+    function swap(
+        ISwapVM.Order calldata order,
+        address tokenIn,
+        address tokenOut,
+        uint256 requestedOut,
+        bytes calldata takerTraitsAndData
+    ) public override nonReentrant returns (uint256 amountIn, uint256 amountOut, bytes32 orderHash) {
+        if (msg.sender == order.maker) revert UnsupportedTakerData();
+        FillCapacity memory c = capacity(order, tokenIn, tokenOut, requestedOut);
+        _checkTaker(takerTraitsAndData, c);
+        (amountIn, amountOut, orderHash) = super.swap(order, tokenIn, tokenOut, c.amountOut, takerTraitsAndData);
+        // Authoritative post-settlement read; a failed guard rolls back BOTH transfers and Aqua accounting.
+        MarginMMScenarioEngine.State memory afterState = riskEngine.snapshot(order.maker);
+        uint256 afterStress = riskEngine.stressHF(afterState);
+        if (afterState.aaveHF <= 1e18 || afterStress < c.riskFloor) revert RiskBoundMismatch();
+        emit RiskChecked(orderHash, order.maker, requestedOut, amountOut, c.riskFloor, afterStress);
+    }
+
+    function _checkTaker(bytes calldata packed, FillCapacity memory c) private pure {
+        if (c.amountOut == 0) revert NoCapacity();
+        (TakerTraits traits, bytes calldata data) = TakerTraitsLib.parse(packed);
+        (bool hasThreshold, uint256 maxIn) = traits.threshold(data);
+        bytes calldata instructionArgs = traits.instructionsArgs(data);
+        if (!hasThreshold || maxIn == 0 || instructionArgs.length != 32) revert UnsupportedTakerData();
+        uint256 minOut = abi.decode(instructionArgs, (uint256));
+        uint40 deadline = traits.deadline(data);
+        if (minOut == 0 || deadline == 0 || keccak256(packed) != keccak256(buildTakerData(maxIn, minOut, deadline))) {
+            revert UnsupportedTakerData();
+        }
+        // aToken source balances may decrease by a normalized-income rounding
+        // unit beyond the nominal transfer amount. The user's max covers it.
+        if (c.amountIn > type(uint256).max - c.inputRounding || c.amountIn + c.inputRounding > maxIn) {
+            revert UnsupportedTakerData();
+        }
+        if (c.amountOut < minOut) revert MinimumOutputNotMet();
+        // Official SwapVM validates maxIn and deadline, including quote calls.
+    }
+
+    function _strategy(ISwapVM.Order calldata order, address tokenIn, address tokenOut)
+        private
+        view
+        returns (bool wethIn, uint256 spread)
+    {
+        if (
+            order.maker == address(0) || MakerTraits.unwrap(order.traits) != AQUA_TRAITS || order.data.length != 66
+                || order.data[0] != bytes1(0) || order.data[1] != bytes1(uint8(64))
+        ) {
+            revert UnsupportedStrategy();
+        }
+        (spread,) = abi.decode(order.data[2:], (uint256, bytes32));
+        if (spread > MAX_SPREAD_BPS) revert UnsupportedStrategy();
+        wethIn = tokenIn == riskEngine.aWETH() && tokenOut == riskEngine.aUSDC();
+        if (!wethIn && !(tokenIn == riskEngine.aUSDC() && tokenOut == riskEngine.aWETH())) revert UnsupportedPair();
+    }
+
+    function _executeCapacityClamp(Context memory ctx, bytes calldata args) internal view {
+        (uint256 spread,) = abi.decode(args, (uint256, bytes32));
+        MarginMMScenarioEngine.State memory s = riskEngine.snapshot(ctx.query.maker);
+        bool wethIn = ctx.query.tokenIn == riskEngine.aWETH();
+        uint256 floor = policy.riskFloor(ctx.query.maker, ctx.query.orderHash);
+        if (floor == 0) revert PolicyDisabled();
+        uint256 cap = MarginMMTradeMath.capacity(s, wethIn, spread, floor);
+        if (ctx.swap.amountOut > cap || ctx.swap.amountOut > ctx.swap.balanceOut) revert RiskBoundMismatch();
+        ctx.swap.amountIn = MarginMMTradeMath.inputFor(s, wethIn, ctx.swap.amountOut, spread);
+        if (riskEngine.preview(s, wethIn, ctx.swap.amountIn, ctx.swap.amountOut) < floor) revert RiskBoundMismatch();
+    }
+
+    function _instructions()
+        internal
+        pure
+        override
+        returns (function(Context memory, bytes calldata) internal[] memory instructions)
+    {
+        instructions = new function(Context memory, bytes calldata) internal[](1);
+        instructions[0] = _executeCapacityClamp;
     }
 }
