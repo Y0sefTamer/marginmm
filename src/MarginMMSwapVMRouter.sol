@@ -102,7 +102,7 @@ contract MarginMMSwapVMRouter is SwapVM {
     {
         if (
             order.maker == address(0) || MakerTraits.unwrap(order.traits) != AQUA_TRAITS || order.data.length != 66
-            || order.data[0] != bytes1(0) || order.data[1] != bytes1(uint8(64))
+                || order.data[0] != bytes1(0) || order.data[1] != bytes1(uint8(64))
         ) {
             revert UnsupportedStrategy();
         }
