@@ -28,8 +28,8 @@ format:
 
 # Run local Anvil node with Mainnet fork (Crucial for MarginMM Aave integration)
 anvil:
-	anvil -m 'test test test test test test test test test test test junk' --fork-url $(ETH_RPC_URL) --steps-tracing --block-time 1
-
+	anvil -m 'test test test test test test test test test test test junk' --fork-url $(ETH_RPC_URL) --fork-block-number 25913344 --chain-id 31337 --steps-tracing --block-time 1
+	
 NETWORK_ARGS := --rpc-url http://localhost:8545 --private-key $(DEFAULT_ANVIL_KEY) --broadcast
 
 # If --network mainnet is passed (Uses your .env Alchemy RPC)
