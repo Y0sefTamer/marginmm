@@ -1,3 +1,6 @@
 @openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
 @aave/core-v3/=lib/aave-v3-origin/src/
 @1inch/swap-vm/=lib/swap-vm/
+@1inch/solidity-utils/=lib/swap-vm/node_modules/@1inch/solidity-utils/
+@1inch/aqua/=lib/swap-vm/node_modules/@1inch/aqua/
+forge-std/=lib/forge-std/src/
