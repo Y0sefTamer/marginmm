@@ -1,0 +1,127 @@
+diff --git a/src/instructions/XYCSwap.sol b/src/instructions/XYCSwap.sol
+index 4f3b2fc..87ca187 100644
+--- a/src/instructions/XYCSwap.sol
++++ b/src/instructions/XYCSwap.sol
+@@ -4,9 +4,8 @@ pragma solidity 0.8.30;
+ /// @custom:license-url https://github.com/1inch/swap-vm/blob/main/LICENSES/SwapVM-1.1.txt
+ /// @custom:copyright © 2025 Degensoft Ltd
+ 
+-import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
+-
+ import { Context, ContextLib } from "../libs/VM.sol";
++import { XYCSwapMath } from "../libs/XYCSwapMath.sol";
+ 
+ contract XYCSwap {
+     using ContextLib for Context;
+@@ -19,16 +18,10 @@ contract XYCSwap {
+ 
+         if (ctx.query.isExactIn) {
+             require(ctx.swap.amountOut == 0, XYCSwapRecomputeDetected());
+-            ctx.swap.amountOut = ( // Floor division for tokenOut is desired behavior
+-                (ctx.swap.amountIn * ctx.swap.balanceOut) /
+-                (ctx.swap.balanceIn + ctx.swap.amountIn)
+-            );
++            ctx.swap.amountOut = XYCSwapMath.exactIn(ctx.swap.balanceIn, ctx.swap.balanceOut, ctx.swap.amountIn);
+         } else {
+             require(ctx.swap.amountIn == 0, XYCSwapRecomputeDetected());
+-            ctx.swap.amountIn = Math.ceilDiv( // Ceiling division for tokenIn is desired behavior
+-                ctx.swap.amountOut * ctx.swap.balanceIn,
+-                (ctx.swap.balanceOut - ctx.swap.amountOut)
+-            );
++            ctx.swap.amountIn = XYCSwapMath.exactOut(ctx.swap.balanceIn, ctx.swap.balanceOut, ctx.swap.amountOut);
+         }
+     }
+ }
+diff --git a/src/libs/XYCSwapMath.sol b/src/libs/XYCSwapMath.sol
+new file mode 100644
+index 0000000..8201324
+--- /dev/null
++++ b/src/libs/XYCSwapMath.sol
+@@ -0,0 +1,28 @@
++// SPDX-License-Identifier: LicenseRef-Degensoft-SwapVM-1.1
++pragma solidity 0.8.30;
++
++/// @custom:license-url https://github.com/1inch/swap-vm/blob/main/LICENSES/SwapVM-1.1.txt
++/// @custom:copyright © 2025 Degensoft Ltd
++
++import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
++
++/// @dev Single source of truth for the XYC amount and rounding semantics.
++library XYCSwapMath {
++    function exactIn(uint256 balanceIn, uint256 balanceOut, uint256 amountIn)
++        internal
++        pure
++        returns (uint256 amountOut)
++    {
++        // Floor division for tokenOut is maker-favoring and matches XYCSwap.
++        return (amountIn * balanceOut) / (balanceIn + amountIn);
++    }
++
++    function exactOut(uint256 balanceIn, uint256 balanceOut, uint256 amountOut)
++        internal
++        pure
++        returns (uint256 amountIn)
++    {
++        // Ceiling division for tokenIn is maker-favoring and matches XYCSwap.
++        return Math.ceilDiv(amountOut * balanceIn, balanceOut - amountOut);
++    }
++}
+diff --git a/src/instructions/XYCConcentrate.sol b/src/instructions/XYCConcentrate.sol
+index 11db80d..5ad7540 100644
+--- a/src/instructions/XYCConcentrate.sol
++++ b/src/instructions/XYCConcentrate.sol
+@@ -51,6 +51,27 @@ library XYCConcentrateArgsBuilder {
+         sqrtPriceSpot = Math.sqrt(Math.mulDiv(virtualGt, ONE*ONE, virtualLt));
+     }
+ 
++    /// @notice Apply the exact virtual-reserve transformation used by XYCConcentrate.
++    function virtualBalances(
++        uint256 balanceIn,
++        uint256 balanceOut,
++        bool isTokenInLt,
++        uint256 sqrtPriceMin,
++        uint256 sqrtPriceMax
++    ) internal pure returns (uint256 virtualIn, uint256 virtualOut) {
++        uint256 bLt = isTokenInLt ? balanceIn : balanceOut;
++        uint256 bGt = isTokenInLt ? balanceOut : balanceIn;
++        uint256 liquidity = _computeL(bLt, bGt, sqrtPriceMin, sqrtPriceMax);
++
++        if (isTokenInLt) {
++            virtualIn = balanceIn + Math.ceilDiv(liquidity * ONE, sqrtPriceMax);
++            virtualOut = balanceOut + Math.mulDiv(liquidity, sqrtPriceMin, ONE);
++        } else {
++            virtualIn = balanceIn + Math.ceilDiv(liquidity * sqrtPriceMin, ONE);
++            virtualOut = balanceOut + Math.mulDiv(liquidity, ONE, sqrtPriceMax);
++        }
++    }
++
+     /// @notice Compute the initial balances for given L, P_spot, P_min, P_max:
+     ///   bLt = L * (sqrtPmax - sqrtPspot) / (sqrtPmax * sqrtPspot)
+     ///   bGt = L * (sqrtPspot - sqrtPmin)
+@@ -130,19 +151,13 @@ contract XYCConcentrate {
+ 
+         (uint256 sqrtPriceMin, uint256 sqrtPriceMax) = XYCConcentrateArgsBuilder.parse2D(args);
+ 
+-        bool isTokenInLt = ctx.query.tokenIn < ctx.query.tokenOut;
+-        uint256 bLt = isTokenInLt ? ctx.swap.balanceIn : ctx.swap.balanceOut;
+-        uint256 bGt = isTokenInLt ? ctx.swap.balanceOut : ctx.swap.balanceIn;
+-
+-        uint256 L = XYCConcentrateArgsBuilder._computeL(bLt, bGt, sqrtPriceMin, sqrtPriceMax);
+-
+-        if (isTokenInLt) {
+-            ctx.swap.balanceIn += Math.ceilDiv(L * ONE, sqrtPriceMax);
+-            ctx.swap.balanceOut += Math.mulDiv(L, sqrtPriceMin, ONE);
+-        } else {
+-            ctx.swap.balanceIn += Math.ceilDiv(L * sqrtPriceMin, ONE);
+-            ctx.swap.balanceOut += Math.mulDiv(L, ONE, sqrtPriceMax);
+-        }
++        (ctx.swap.balanceIn, ctx.swap.balanceOut) = XYCConcentrateArgsBuilder.virtualBalances(
++            ctx.swap.balanceIn,
++            ctx.swap.balanceOut,
++            ctx.query.tokenIn < ctx.query.tokenOut,
++            sqrtPriceMin,
++            sqrtPriceMax
++        );
+ 
+         ctx.runLoop();
+     }

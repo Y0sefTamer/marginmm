@@ -1,0 +1,22 @@
+diff --git a/src/SwapVM.sol b/src/SwapVM.sol
+index 45cdb51..171cf18 100644
+--- a/src/SwapVM.sol
++++ b/src/SwapVM.sol
+@@ -109,7 +109,7 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
+         address tokenOut,
+         uint256 amount,
+         bytes calldata takerTraitsAndData
+-    ) external returns (uint256 amountIn, uint256 amountOut, bytes32 orderHash) {
++    ) public virtual returns (uint256 amountIn, uint256 amountOut, bytes32 orderHash) {
+         orderHash = hash(order);
+ 
+         (TakerTraits takerTraits, bytes calldata takerData) = TakerTraitsLib.parse(takerTraitsAndData);
+@@ -150,7 +150,7 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
+         address tokenOut,
+         uint256 amount,
+         bytes calldata takerTraitsAndData
+-    ) external returns (uint256 amountIn, uint256 amountOut, bytes32 orderHash) {
++    ) public virtual returns (uint256 amountIn, uint256 amountOut, bytes32 orderHash) {
+         orderHash = hash(order);
+         _reentrancyGuards[orderHash].lock();
+ 

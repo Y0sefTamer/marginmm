@@ -1,0 +1,40 @@
+diff --git a/src/SwapVM.sol b/src/SwapVM.sol
+--- a/src/SwapVM.sol
++++ b/src/SwapVM.sol
+@@ -150,7 +150,7 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
+ 
+         (amountIn, amountOut) = ctx.runLoop();
+         order.traits.validate(tokenIn, tokenOut, amountIn);
+-        takerTraits.validate(takerData, amount, amountIn, amountOut);
++        _validateTakerTraits(takerTraits, takerData, amount, amountIn, amountOut);
+     }
+ 
+     function swap(
+@@ -200,7 +200,7 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
+         uint256 originalAquaBalanceIn = ctx.swap.balanceIn;
+         (amountIn, amountOut) = ctx.runLoop();
+         order.traits.validate(tokenIn, tokenOut, amountIn);
+-        takerTraits.validate(takerData, amount, amountIn, amountOut);
++        _validateTakerTraits(takerTraits, takerData, amount, amountIn, amountOut);
+ 
+         if (takerTraits.isFirstTransferFromTaker()) {
+             _transferIn(ctx, order, takerTraits, takerData, originalAquaBalanceIn);
+@@ -289,6 +289,18 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
+         }
+     }
+ 
++    /// @dev Override only when a specialized router deliberately narrows the accepted
++    ///      taker semantics. The default remains the pinned SwapVM validation.
++    function _validateTakerTraits(
++        TakerTraits takerTraits,
++        bytes calldata takerData,
++        uint256 takerAmount,
++        uint256 amountIn,
++        uint256 amountOut
++    ) internal view virtual {
++        takerTraits.validate(takerData, takerAmount, amountIn, amountOut);
++    }
++
+     /// @dev Override this function in router to provide supported instruction list
+     function _instructions() internal pure virtual returns (function(Context memory, bytes calldata) internal[] memory) { }
+ }
