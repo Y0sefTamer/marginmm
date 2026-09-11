@@ -60,6 +60,8 @@ contract MarginMMScenarioEngine {
     uint256 public constant WAD = 1e18;
     uint256 public constant RAY = 1e27;
     uint256 public constant BPS = 10_000;
+    uint32 public constant MIN_SHOCK_BPS = 100;
+    uint32 public constant MAX_SHOCK_BPS = 5_000;
     address public constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address public constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address public constant MAINNET_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
@@ -90,6 +92,7 @@ contract MarginMMScenarioEngine {
     error UnsupportedPosition(address asset);
     error UnsupportedReserve(address asset);
     error InvalidState();
+    error InvalidShock();
     error InsufficientOutputBalance();
 
     constructor(address pool_, address dataProvider_, address oracle_) {
@@ -147,15 +150,27 @@ contract MarginMMScenarioEngine {
         _validateState(s);
     }
 
-    /// @notice Minimum HF across (10000,10000), (8000,10000),
-    ///         (7000,10000), (10000,9500), ordered as (WETH, USDC) price BPS.
-    function stressHF(State memory s) public pure returns (uint256 worst) {
+    /// @notice Active one-factor StressHF. WETH receives the calibrated downside;
+    ///         USDC collateral and USDC debt retain their current oracle price.
+    function stressHF(State memory s, uint32 shockBps) public pure returns (uint256) {
         _validateState(s);
+        if (shockBps < MIN_SHOCK_BPS || shockBps > MAX_SHOCK_BPS) revert InvalidShock();
         if (s.usdcDebt == 0) return type(uint256).max;
-        worst = _scenarioHF(s, 10_000, 10_000);
-        worst = Math.min(worst, _scenarioHF(s, 8_000, 10_000));
-        worst = Math.min(worst, _scenarioHF(s, 7_000, 10_000));
-        worst = Math.min(worst, _scenarioHF(s, 10_000, 9_500));
+        return _scenarioHF(s, BPS - shockBps, BPS);
+    }
+
+    /// @notice Explicit sensitivity helper; never selected as an active runtime policy.
+    function benchmarkStressHF(State memory s, uint256 wethMultiplierBps, uint256 usdcMultiplierBps)
+        external
+        pure
+        returns (uint256)
+    {
+        _validateState(s);
+        if (wethMultiplierBps == 0 || wethMultiplierBps > BPS || usdcMultiplierBps == 0 || usdcMultiplierBps > BPS) {
+            revert InvalidShock();
+        }
+        if (s.usdcDebt == 0) return type(uint256).max;
+        return _scenarioHF(s, wethMultiplierBps, usdcMultiplierBps);
     }
 
     /// @notice Conservative same-transaction preview: input traverses two aToken hops.
@@ -163,7 +178,11 @@ contract MarginMMScenarioEngine {
     ///      Outgoing debit = amountOut + ceil(index/RAY) + 1, capped at balance.
     ///      Zero legs have zero effect. An impossible nominal output reverts.
     ///      Fresh snapshots are required if time, prices or account state changes.
-    function preview(State memory s, bool wethIn, uint256 amountIn, uint256 amountOut) external pure returns (uint256) {
+    function preview(State memory s, bool wethIn, uint256 amountIn, uint256 amountOut, uint32 shockBps)
+        external
+        pure
+        returns (uint256)
+    {
         _validateState(s);
         if (amountIn > type(uint128).max || amountOut > type(uint128).max) revert InvalidState();
         uint256 inputIndex = wethIn ? s.wethIndex : s.usdcIndex;
@@ -180,7 +199,7 @@ contract MarginMMScenarioEngine {
             s.usdcAmount += credit;
             s.wethAmount -= debit;
         }
-        return stressHF(s);
+        return stressHF(s, shockBps);
     }
 
     function _scenarioHF(State memory s, uint256 wethBps, uint256 usdcBps) internal pure returns (uint256) {

@@ -1,85 +1,118 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.30;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {XYCSwapMath} from "@1inch/swap-vm/src/libs/XYCSwapMath.sol";
 import {MarginMMScenarioEngine} from "../MarginMMScenarioEngine.sol";
 
-/// @notice Conservative affine capacity at a live oracle reference price plus maker spread.
-/// @dev Outgoing units are token base units. No floating point or iterative monotonicity assumption.
+/// @notice Composition-aware capacity solver over the pinned SwapVM XYC curve.
+/// @dev All capped inputs use the same maker-favoring exact-out rounding as XYCSwap.
 library MarginMMTradeMath {
-    uint256 internal constant BPS = 10_000;
     uint256 internal constant RAY = 1e27;
 
-    function inputFor(MarginMMScenarioEngine.State memory s, bool wethIn, uint256 out, uint256 spread)
-        internal
-        pure
-        returns (uint256)
-    {
-        uint256 inPrice = wethIn ? s.wethPrice : s.usdcPrice;
-        uint256 outPrice = wethIn ? s.usdcPrice : s.wethPrice;
-        uint256 inUnit = wethIn ? 1e18 : 1e6;
-        uint256 outUnit = wethIn ? 1e6 : 1e18;
-        uint256 fair = Math.mulDiv(out, outPrice * inUnit, outUnit * inPrice, Math.Rounding.Ceil);
-        return Math.mulDiv(fair, BPS + spread, BPS, Math.Rounding.Ceil);
+    struct Result {
+        uint256 baseAmountOut;
+        uint256 qMax;
+        uint256 actualAmountIn;
+        uint256 stressHFBefore;
+        uint256 stressHFAfter;
+        bool liquidityCapped;
+        bool riskCapped;
     }
 
-    function weighted(uint256 amount, uint256 price, uint256 unit, uint256 shock, uint256 lt)
-        internal
-        pure
-        returns (uint256)
-    {
-        return Math.mulDiv(Math.mulDiv(amount, price, unit), shock * lt, BPS * BPS);
-    }
+    error InvalidCurveResult();
 
-    function capacity(MarginMMScenarioEngine.State memory s, bool wethIn, uint256 spread, uint256 floor)
-        internal
-        pure
-        returns (uint256 result)
-    {
-        uint256 outBalance = wethIn ? s.usdcAmount : s.wethAmount;
-        uint256 outGuard = Math.ceilDiv(wethIn ? s.usdcIndex : s.wethIndex, RAY) + 1;
-        if (outBalance <= outGuard) return 0;
-        result = outBalance - outGuard;
-        if (s.usdcDebt == 0) return result;
-        for (uint256 i; i < 4; ++i) {
-            uint256 ws = i == 1 ? 8_000 : i == 2 ? 7_000 : BPS;
-            uint256 us = i == 3 ? 9_500 : BPS;
-            result = Math.min(result, scenarioCapacity(s, wethIn, spread, floor, ws, us));
-        }
-    }
-
-    function scenarioCapacity(
-        MarginMMScenarioEngine.State memory s,
+    function solve(
+        MarginMMScenarioEngine riskEngine,
+        MarginMMScenarioEngine.State memory state,
         bool wethIn,
-        uint256 spread,
-        uint256 floor,
-        uint256 ws,
-        uint256 us
-    ) internal pure returns (uint256) {
-        uint256 collateral = weighted(s.wethAmount, s.wethPrice, 1e18, ws, s.wethLT)
-            + weighted(s.usdcAmount, s.usdcPrice, 1e6, us, s.usdcLT);
-        uint256 debt =
-            Math.mulDiv(Math.mulDiv(s.usdcDebt, s.usdcPrice, 1e6, Math.Rounding.Ceil), us, BPS, Math.Rounding.Ceil);
-        uint256 required = Math.mulDiv(debt, floor, 1e18, Math.Rounding.Ceil);
-        // Reserve a fixed loss allowance for both aToken input hops, the output hop,
-        // and the floors at each base-value/shock/LT calculation. This keeps the bound
-        // affine even when token/base conversions have discrete rounding steps.
-        uint256 inGuard = 2 * Math.ceilDiv(wethIn ? s.wethIndex : s.usdcIndex, RAY) + 2;
-        uint256 outGuard = Math.ceilDiv(wethIn ? s.usdcIndex : s.wethIndex, RAY) + 1;
-        uint256 inUnit = wethIn ? 1e18 : 1e6;
-        uint256 outUnit = wethIn ? 1e6 : 1e18;
-        uint256 inPrice = wethIn ? s.wethPrice : s.usdcPrice;
-        uint256 outPrice = wethIn ? s.usdcPrice : s.wethPrice;
-        uint256 inWeight = wethIn ? ws * s.wethLT : us * s.usdcLT;
-        uint256 outWeight = wethIn ? us * s.usdcLT : ws * s.wethLT;
-        uint256 allowance = Math.mulDiv(inGuard, inPrice, inUnit, Math.Rounding.Ceil)
-            + Math.mulDiv(outGuard, outPrice, outUnit, Math.Rounding.Ceil) + 8;
-        if (collateral <= required || collateral - required <= allowance) return 0;
-        uint256 headroom = collateral - required - allowance;
-        uint256 debitSlope = outWeight * BPS;
-        uint256 creditSlope = inWeight * (BPS + spread);
-        if (creditSlope >= debitSlope) return type(uint256).max;
-        uint256 maxBase = Math.mulDiv(headroom, BPS * BPS * BPS, debitSlope - creditSlope);
-        return Math.mulDiv(maxBase, outUnit, outPrice);
+        uint256 maxAmountIn,
+        uint256 virtualBalanceIn,
+        uint256 virtualBalanceOut,
+        uint256 availableAmountOut,
+        uint256 hardFloorStressHF,
+        uint32 shockBps
+    ) internal view returns (Result memory result) {
+        result.stressHFBefore = riskEngine.stressHF(state, shockBps);
+        result.stressHFAfter = result.stressHFBefore;
+        if (maxAmountIn == 0) return result;
+        result.baseAmountOut = XYCSwapMath.exactIn(virtualBalanceIn, virtualBalanceOut, maxAmountIn);
+        if (result.baseAmountOut == 0) return result;
+        if (result.stressHFBefore < hardFloorStressHF) return result;
+
+        uint256 outputIndex = wethIn ? state.usdcIndex : state.wethIndex;
+        uint256 outputBalance = wethIn ? state.usdcAmount : state.wethAmount;
+        uint256 outputRoundingGuard = Math.ceilDiv(outputIndex, RAY) + 1;
+        if (outputBalance <= outputRoundingGuard) return result;
+
+        uint256 physicalCap = Math.min(availableAmountOut, outputBalance - outputRoundingGuard);
+        uint256 candidate = Math.min(result.baseAmountOut, physicalCap);
+        result.liquidityCapped = candidate < result.baseAmountOut;
+        if (candidate == 0) return result;
+
+        uint256 candidateInput = candidate == result.baseAmountOut
+            ? maxAmountIn
+            : XYCSwapMath.exactOut(virtualBalanceIn, virtualBalanceOut, candidate);
+        if (candidateInput > maxAmountIn) revert InvalidCurveResult();
+        uint256 candidateStress = riskEngine.preview(state, wethIn, candidateInput, candidate, shockBps);
+        if (candidateStress >= hardFloorStressHF) {
+            result.qMax = candidate;
+            result.actualAmountIn = candidateInput;
+            result.stressHFAfter = candidateStress;
+            return result;
+        }
+
+        // With a safe starting state and an unsafe upper endpoint, the XYC/post-fill
+        // collateral function has one safe prefix. Search that exact atomic boundary.
+        uint256 low = 0;
+        uint256 high = candidate;
+        while (low < high) {
+            uint256 midpoint = low + (high - low + 1) / 2;
+            (bool safe,,) = _evaluate(
+                riskEngine,
+                state,
+                wethIn,
+                midpoint,
+                maxAmountIn,
+                virtualBalanceIn,
+                virtualBalanceOut,
+                hardFloorStressHF,
+                shockBps
+            );
+            if (safe) low = midpoint;
+            else high = midpoint - 1;
+        }
+
+        result.qMax = low;
+        result.riskCapped = low < candidate;
+        if (low == 0) return result;
+        (, result.actualAmountIn, result.stressHFAfter) = _evaluate(
+            riskEngine,
+            state,
+            wethIn,
+            low,
+            maxAmountIn,
+            virtualBalanceIn,
+            virtualBalanceOut,
+            hardFloorStressHF,
+            shockBps
+        );
+    }
+
+    function _evaluate(
+        MarginMMScenarioEngine riskEngine,
+        MarginMMScenarioEngine.State memory state,
+        bool wethIn,
+        uint256 amountOut,
+        uint256 maxAmountIn,
+        uint256 virtualBalanceIn,
+        uint256 virtualBalanceOut,
+        uint256 hardFloorStressHF,
+        uint32 shockBps
+    ) private view returns (bool safe, uint256 amountIn, uint256 stressAfter) {
+        amountIn = XYCSwapMath.exactOut(virtualBalanceIn, virtualBalanceOut, amountOut);
+        if (amountIn > maxAmountIn) return (false, amountIn, 0);
+        stressAfter = riskEngine.preview(state, wethIn, amountIn, amountOut, shockBps);
+        safe = stressAfter >= hardFloorStressHF;
     }
 }
