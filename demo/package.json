@@ -1,0 +1,13 @@
+{
+  "name": "marginmm-local-demo",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22 <23" },
+  "scripts": {
+    "start": "node server.mjs",
+    "bootstrap": "node bootstrap.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:runtime": "node test/runtime.mjs"
+  },
+  "dependencies": { "ethers": "6.17.0" }
+}
