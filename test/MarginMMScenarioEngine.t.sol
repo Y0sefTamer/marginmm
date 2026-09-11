@@ -49,6 +49,7 @@ abstract contract ScenarioAddresses is Test {
     address internal constant AUSDC = 0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c;
     address internal constant OTHER = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
     uint256 internal constant RAY = 1e27;
+    uint32 internal constant ACTIVE_SHOCK_BPS = 1_240;
     ScenarioHarness internal engine;
 
     function _state() internal pure returns (MarginMMScenarioEngine.State memory s) {
@@ -169,18 +170,23 @@ contract MarginMMScenarioEngineTest is ScenarioAddresses {
         assertEq(engine.aUSDC(), AUSDC);
     }
 
-    function test_FixedScenarioMinimumAndNoDebt() public view {
+    function test_ActiveOneFactorShockAndBenchmarkScenariosAreSeparated() public view {
         MarginMMScenarioEngine.State memory s = _state();
-        assertEq(engine.stressHF(s), 1.4825e18);
+        assertEq(engine.stressHF(s, ACTIVE_SHOCK_BPS), 1.5881e18);
+        (uint256 activeCollateral, uint256 activeDebt) = engine.scenarioValues(s, 8_760, 10_000);
+        assertEq(engine.stressHF(s, ACTIVE_SHOCK_BPS), activeCollateral * 1e18 / activeDebt);
+
+        // Historical 20%/30% WETH and 5% USDC shocks remain explicit sensitivity benchmarks only.
         uint256 worst = type(uint256).max;
         uint256[4] memory wethBps = [uint256(10_000), 8_000, 7_000, 10_000];
         for (uint256 i; i < 4; ++i) {
             (uint256 collateral, uint256 debt) = engine.scenarioValues(s, wethBps[i], i == 3 ? 9_500 : 10_000);
             worst = Math.min(worst, collateral * 1e18 / debt);
         }
-        assertEq(engine.stressHF(s), worst);
+        assertEq(worst, 1.4825e18);
+        assertEq(engine.benchmarkStressHF(s, 7_000, 10_000), worst);
         s.usdcDebt = 0;
-        assertEq(engine.stressHF(s), type(uint256).max);
+        assertEq(engine.stressHF(s, ACTIVE_SHOCK_BPS), type(uint256).max);
     }
 
     function testFuzz_UsdcStressScalesCollateralAndDebtTogether(uint64 amountRaw, uint64 debtRaw, uint32 priceRaw)
@@ -224,7 +230,7 @@ contract MarginMMScenarioEngineTest is ScenarioAddresses {
         }
         uint256 amountIn = bound(inRaw, 1, 1e20);
         uint256 amountOut = bound(outRaw, 0, _rayMul(outScaled, outIndex) / 4);
-        uint256 predicted = engine.preview(s, wethIn, amountIn, amountOut);
+        uint256 predicted = engine.preview(s, wethIn, amountIn, amountOut, ACTIVE_SHOCK_BPS);
         // Independent scaled-balance simulation of Aave half-up ray arithmetic.
         uint256 hop1 = _rayDiv(amountIn, inIndex);
         uint256 receivedByRouter = _rayMul(hop1, inIndex);
@@ -238,7 +244,7 @@ contract MarginMMScenarioEngineTest is ScenarioAddresses {
             s.usdcAmount = afterIn;
             s.wethAmount = afterOut;
         }
-        assertLe(predicted, engine.stressHF(s));
+        assertLe(predicted, engine.stressHF(s, ACTIVE_SHOCK_BPS));
     }
 
     function _rayMul(uint256 x, uint256 index) internal pure returns (uint256) {
@@ -251,25 +257,25 @@ contract MarginMMScenarioEngineTest is ScenarioAddresses {
 
     function test_PreviewZeroDustFullOutputAndRepeatedCalls() public view {
         MarginMMScenarioEngine.State memory s = _state();
-        uint256 initialHF = engine.stressHF(s);
-        assertEq(engine.preview(s, true, 0, 0), initialHF);
-        assertEq(engine.preview(s, true, 6, 0), initialHF);
-        uint256 quoted = engine.preview(s, false, 100e6, 1e18);
-        assertEq(engine.preview(s, false, 100e6, 1e18), quoted);
-        assertEq(engine.stressHF(s), initialHF);
+        uint256 initialHF = engine.stressHF(s, ACTIVE_SHOCK_BPS);
+        assertEq(engine.preview(s, true, 0, 0, ACTIVE_SHOCK_BPS), initialHF);
+        assertEq(engine.preview(s, true, 6, 0, ACTIVE_SHOCK_BPS), initialHF);
+        uint256 quoted = engine.preview(s, false, 100e6, 1e18, ACTIVE_SHOCK_BPS);
+        assertEq(engine.preview(s, false, 100e6, 1e18, ACTIVE_SHOCK_BPS), quoted);
+        assertEq(engine.stressHF(s, ACTIVE_SHOCK_BPS), initialHF);
         s.usdcAmount = 0;
-        assertEq(engine.preview(_state(), true, 0, 50_000e6), engine.stressHF(s));
+        assertEq(engine.preview(_state(), true, 0, 50_000e6, ACTIVE_SHOCK_BPS), engine.stressHF(s, ACTIVE_SHOCK_BPS));
     }
 
     function test_RejectImpossibleOutputAndOverflow() public {
         MarginMMScenarioEngine.State memory s = _state();
         vm.expectRevert(MarginMMScenarioEngine.InsufficientOutputBalance.selector);
-        engine.preview(s, true, 0, s.usdcAmount + 1);
+        engine.preview(s, true, 0, s.usdcAmount + 1, ACTIVE_SHOCK_BPS);
         vm.expectRevert(MarginMMScenarioEngine.InvalidState.selector);
-        engine.preview(s, false, type(uint256).max, 0);
+        engine.preview(s, false, type(uint256).max, 0, ACTIVE_SHOCK_BPS);
         s.wethAmount = type(uint128).max;
         vm.expectRevert(MarginMMScenarioEngine.InvalidState.selector);
-        engine.preview(s, true, 100, 0);
+        engine.preview(s, true, 100, 0, ACTIVE_SHOCK_BPS);
     }
 
     function test_MaximumDomainDoesNotOverflow() public view {
@@ -283,27 +289,27 @@ contract MarginMMScenarioEngineTest is ScenarioAddresses {
         s.usdcLT = 10_000;
         s.wethIndex = type(uint128).max;
         s.usdcIndex = type(uint128).max;
-        assertGt(engine.stressHF(s), 0);
-        assertGt(engine.preview(s, false, 0, 1), 0);
+        assertGt(engine.stressHF(s, ACTIVE_SHOCK_BPS), 0);
+        assertGt(engine.preview(s, false, 0, 1, ACTIVE_SHOCK_BPS), 0);
     }
 
     function test_RejectInvalidPricesThresholdsAndIndices() public {
         MarginMMScenarioEngine.State memory s = _state();
         s.wethPrice = 0;
         vm.expectRevert(MarginMMScenarioEngine.InvalidState.selector);
-        engine.stressHF(s);
+        engine.stressHF(s, ACTIVE_SHOCK_BPS);
         s = _state();
         s.usdcPrice = uint256(type(uint64).max) + 1;
         vm.expectRevert(MarginMMScenarioEngine.InvalidState.selector);
-        engine.stressHF(s);
+        engine.stressHF(s, ACTIVE_SHOCK_BPS);
         s = _state();
         s.usdcLT = 10_001;
         vm.expectRevert(MarginMMScenarioEngine.InvalidState.selector);
-        engine.stressHF(s);
+        engine.stressHF(s, ACTIVE_SHOCK_BPS);
         s = _state();
         s.wethIndex = RAY - 1;
         vm.expectRevert(MarginMMScenarioEngine.InvalidState.selector);
-        engine.stressHF(s);
+        engine.stressHF(s, ACTIVE_SHOCK_BPS);
     }
 
     function test_RejectEModeAndDifferentUser() public {
@@ -498,7 +504,7 @@ contract MarginMMScenarioEngineForkTest is ScenarioAddresses {
 
     function _trade(bool wethIn, uint256 amountIn, uint256 amountOut) internal {
         MarginMMScenarioEngine.State memory beforeState = engine.snapshot(maker);
-        uint256 previewHF = engine.preview(beforeState, wethIn, amountIn, amountOut);
+        uint256 previewHF = engine.preview(beforeState, wethIn, amountIn, amountOut, ACTIVE_SHOCK_BPS);
         address tokenIn = wethIn ? AWETH : AUSDC;
         address tokenOut = wethIn ? AUSDC : AWETH;
         uint256 intermediateBefore = IERC20(tokenIn).balanceOf(intermediate);
@@ -511,7 +517,7 @@ contract MarginMMScenarioEngineForkTest is ScenarioAddresses {
         assertTrue(IERC20(tokenOut).transfer(receiver, amountOut));
         MarginMMScenarioEngine.State memory afterState = engine.snapshot(maker);
         assertEq(afterState.usdcDebt, beforeState.usdcDebt, "aToken trades must not change debt");
-        assertLe(previewHF, engine.stressHF(afterState), "preview overcredited actual settlement");
+        assertLe(previewHF, engine.stressHF(afterState, ACTIVE_SHOCK_BPS), "preview overcredited actual settlement");
         assertGt(afterState.aaveHF, 1e18);
     }
 
