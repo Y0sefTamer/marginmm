@@ -22,6 +22,7 @@ contract DeployMarginMM is Script {
     {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         address owner = vm.addr(deployerKey);
+        address calibrationSigner = vm.envAddress("CALIBRATION_SIGNER");
         address provider = MAINNET_PROVIDER;
         address pool = MAINNET_POOL;
         address dataProvider = IDeployProvider(provider).getPoolDataProvider();
@@ -30,7 +31,7 @@ contract DeployMarginMM is Script {
         vm.startBroadcast(deployerKey);
         aqua = new Aqua();
         riskEngine = new MarginMMScenarioEngine(pool, dataProvider, oracle);
-        policy = new MarginMMPolicy();
+        policy = new MarginMMPolicy(owner, calibrationSigner);
         router = new MarginMMSwapVMRouter(
             address(aqua), riskEngine.WETH(), address(riskEngine), address(policy), owner, "MarginMM", "1"
         );
