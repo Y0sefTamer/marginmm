@@ -416,9 +416,10 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
 async function main(): Promise<void> {
   const config = loadCalibrationServiceConfig();
   const app = await createCalibrationApp(config);
-  const server = app.listen(config.port, "127.0.0.1", () => {
-    console.log(`MarginMM calibration service ready on http://127.0.0.1:${config.port}`);
-  });
+  const host = process.env.HOST || "0.0.0.0";
+ const server = app.listen(config.port, host, () => {
+ console.log(`MarginMM calibration service ready on http://${host}:${config.port}`);
+ });
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => server.close(() => process.exit(0)));
   }
