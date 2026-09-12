@@ -13,3 +13,7 @@ docs/
 
 # Dotenv file
 .env
+services/.env.agent.local
+services/.env.calibrator.local
+demo/.env.local
+services/.env.local

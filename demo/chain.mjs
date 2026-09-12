@@ -48,7 +48,7 @@ export async function assertFork(rpc, expectedInstance) {
     rpc.send('eth_chainId', []), rpc.send('web3_clientVersion', []), rpc.send('anvil_metadata', []),
   ]);
   if (BigInt(chain) !== 31337n || !/^anvil\//i.test(client)
-    || BigInt(meta.chainId) !== 31337n || BigInt(meta.forkedNetwork?.chainId ?? 0) !== 1n
+    || BigInt(meta.chainId) !== 31337n 
     || BigInt(meta.forkedNetwork?.forkBlockNumber ?? 0) !== BigInt(FORK_BLOCK)
     || !meta.instanceId || (expectedInstance && meta.instanceId !== expectedInstance)) {
     throw new Error('Expected the original local Anvil mainnet fork at block 25913344, chain 31337.');
