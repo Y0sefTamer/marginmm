@@ -693,6 +693,9 @@ This repository has **not** undergone an independent production audit.
 
 ---
 
+## MEV & Execution Considerations
+MarginMM does not operate an MEV searcher or claim to eliminate MEV. However, the execution design accounts for adversarial execution conditions through minimum-output protection, bounded strategy pricing, atomic execution, and post-trade risk verification. Risk limits such as qMax are enforced inside the SwapVM execution path, so an execution cannot bypass the Maker's active StressHF floor. Future work could integrate private order flow or MEV-protected transaction routing for additional protection against frontrunning and sandwich attacks.
+
 # ETHOnline 2026 partner integrations
 
 ## 1inch — Build an Aqua App
