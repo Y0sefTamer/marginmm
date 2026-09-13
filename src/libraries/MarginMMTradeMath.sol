@@ -2,7 +2,7 @@
 pragma solidity 0.8.30;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {XYCSwapMath} from "@1inch/swap-vm/src/libs/XYCSwapMath.sol";
+import {XYCSwapMath} from "./XYCSwapMath.sol";
 import {MarginMMScenarioEngine} from "../MarginMMScenarioEngine.sol";
 
 /// @notice Composition-aware capacity solver over the pinned SwapVM XYC curve.

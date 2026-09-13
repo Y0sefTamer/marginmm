@@ -3,7 +3,7 @@ pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {XYCSwapMath} from "@1inch/swap-vm/src/libs/XYCSwapMath.sol";
+import {XYCSwapMath} from "../src/libraries/XYCSwapMath.sol";
 import {MarginMMScenarioEngine} from "../src/MarginMMScenarioEngine.sol";
 import {MarginMMTradeMath} from "../src/libraries/MarginMMTradeMath.sol";
 

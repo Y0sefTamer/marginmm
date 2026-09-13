@@ -9,7 +9,7 @@ import {Aqua} from "@1inch/aqua/src/Aqua.sol";
 import {ISwapVM} from "@1inch/swap-vm/src/interfaces/ISwapVM.sol";
 import {TakerTraitsLib} from "@1inch/swap-vm/src/libs/TakerTraits.sol";
 import {MakerTraits} from "@1inch/swap-vm/src/libs/MakerTraits.sol";
-import {XYCSwapMath} from "@1inch/swap-vm/src/libs/XYCSwapMath.sol";
+import {XYCSwapMath} from "../src/libraries/XYCSwapMath.sol";
 import {XYCConcentrateArgsBuilder} from "@1inch/swap-vm/src/instructions/XYCConcentrate.sol";
 import {MarginMMPolicy} from "../src/MarginMMPolicy.sol";
 import {MarginMMScenarioEngine} from "../src/MarginMMScenarioEngine.sol";
