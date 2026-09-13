@@ -43,3 +43,5 @@ jobs:
 
       - name: Run Forge tests
         run: forge test -vvv
+        env:
+          ETH_RPC_URL: 'https://eth-mainnet.g.alchemy.com/v2/alch_LSg9lZ2HqGp1Ci8hYeQ4W'
