@@ -4,7 +4,7 @@ pragma solidity 0.8.30;
 /// @custom:license-url https://github.com/1inch/swap-vm/blob/main/LICENSES/SwapVM-1.1.txt
 /// @custom:copyright © 2025 Degensoft Ltd
 
-import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @dev Single source of truth for the XYC amount and rounding semantics.
 library XYCSwapMath {
