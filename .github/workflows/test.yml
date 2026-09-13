@@ -31,6 +31,13 @@ jobs:
       - name: Run Forge fmt
         run: forge fmt --check
 
+      
+      - name: Install Node.js dependencies for SwapVM
+        run: |
+          cd lib/swap-vm
+          npm install
+      
+
       - name: Run Forge build
         run: forge build --sizes
 
