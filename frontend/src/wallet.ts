@@ -1,6 +1,6 @@
 import {
-  createPublicClient, createWalletClient, custom, decodeFunctionData, defineChain, getAddress,
-  http, keccak256, maxUint256, parseAbi, parseUnits,
+  createWalletClient, custom, decodeFunctionData, defineChain, getAddress, keccak256,
+  maxUint256, parseAbi, parseUnits,
 } from 'viem';
 import type { Address, EIP1193Provider, Hex } from 'viem';
 import type { AgentProposal, MakerAction, MakerState } from './api';
@@ -33,6 +33,14 @@ export interface ExpectedMakerAction {
   proposal?: AgentProposal;
 }
 
+interface ReceiptWaitOptions {
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  pause?: (milliseconds: number) => Promise<void>;
+}
+
+const pause = (milliseconds: number) => new Promise<void>(resolve => setTimeout(resolve, milliseconds));
+
 export async function connectMaker(expectedMaker: string): Promise<Address> {
   const injected = window.ethereum;
   if (!injected) throw new Error('Install or enable MetaMask/Rabby, then import the local demo-only Maker account.');
@@ -56,13 +64,40 @@ export async function sendMakerAction(
   validateMakerAction(state, action, expected);
   const injected = window.ethereum as EIP1193Provider;
   const wallet = createWalletClient({ account, chain: localChain, transport: custom(injected) });
-  const client = createPublicClient({ chain: localChain, transport: http('http://127.0.0.1:8545') });
   const hash = await wallet.sendTransaction({
     account, chain: localChain, to: getAddress(action.to), data: action.data, value: 0n,
   });
-  const receipt = await client.waitForTransactionReceipt({ hash, confirmations: 1, timeout: 60_000 });
-  if (receipt.status !== 'success') throw new Error('The Maker transaction reverted on local chain 31337.');
+  await waitForMakerReceipt(injected, hash);
   return hash;
+}
+
+export async function waitForMakerReceipt(
+  provider: EIP1193Provider,
+  hash: Hex,
+  { timeoutMs = 15_000, pollIntervalMs = 500, pause: wait = pause }: ReceiptWaitOptions = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastReadError: unknown;
+
+  while (true) {
+    let receipt: { status?: unknown } | null = null;
+    try {
+      receipt = await provider.request({ method: 'eth_getTransactionReceipt', params: [hash] }) as { status?: unknown } | null;
+    } catch (error) {
+      lastReadError = error;
+    }
+
+    if (receipt) {
+      if (receipt.status === '0x1') return;
+      if (receipt.status === '0x0') throw new Error('The Maker transaction reverted on local chain 31337.');
+      throw new Error('The wallet returned a transaction receipt without a canonical status.');
+    }
+    if (Date.now() >= deadline) {
+      const detail = lastReadError ? ' The wallet RPC was temporarily unavailable.' : '';
+      throw new Error(`Transaction broadcast but not confirmed within 15 seconds. Refresh state before submitting again.${detail}`);
+    }
+    await wait(pollIntervalMs);
+  }
 }
 
 export function validateMakerAction(

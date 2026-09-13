@@ -105,14 +105,13 @@ export function createPaidCalibrationRequester(config, baseFetch = globalThis.fe
     }
     parseHbarPriceTinybar(config.priceTinybar);
     const serviceUrl = new URL(config.calibrationServiceUrl);
-    if (serviceUrl.protocol !== "http:"
-        || !["127.0.0.1", "localhost"].includes(serviceUrl.hostname)
+    if (!["http:", "https:"].includes(serviceUrl.protocol)
         || serviceUrl.pathname !== "/calibrate"
         || serviceUrl.search !== ""
         || serviceUrl.hash !== ""
         || serviceUrl.username !== ""
         || serviceUrl.password !== "") {
-        throw new Error("calibrationServiceUrl must be a plain loopback HTTP /calibrate endpoint");
+        throw new Error("calibrationServiceUrl must be a valid HTTP/HTTPS /calibrate endpoint");
     }
     let privateKey;
     try {

@@ -41,6 +41,15 @@ function regime(value: number | undefined) {
   return value === 1 ? 'low volatility' : value === 2 ? 'high volatility' : value === 3 ? 'extreme volatility' : '—';
 }
 
+function hbarFromTinybar(value: string) {
+  const padded = value.padStart(9, '0');
+  const whole = padded.slice(0, -8) || '0';
+  const fraction = padded.slice(-8).replace(/0+$/, '');
+  return `${whole}${fraction ? `.${fraction}` : ''} HBAR`;
+}
+
+type CalibrationBaseline = { shockBps: number; marketRegime: number };
+
 type PendingAgentRequest = { id: string; hardFloor: string; forceRefresh: boolean };
 const AGENT_REQUEST_STORAGE = 'marginmm.agent-request.v1';
 
@@ -69,7 +78,8 @@ function storeAgentRequest(request: PendingAgentRequest | null) {
 }
 
 export default function App() {
-  const agentRequest = useRef<PendingAgentRequest | null>(loadAgentRequest());
+  const [pendingAgentRequest, setPendingAgentRequest] = useState<PendingAgentRequest | null>(() => loadAgentRequest());
+  const agentRequest = useRef<PendingAgentRequest | null>(pendingAgentRequest);
   const [state, setState] = useState<MakerState | null>(null);
   const [connection, setConnection] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [connectionError, setConnectionError] = useState('');
@@ -84,6 +94,8 @@ export default function App() {
   const [maxPrice, setMaxPrice] = useState('');
   const [quote, setQuote] = useState<Quote | null>(null);
   const [proposal, setProposal] = useState<AgentProposal | null>(null);
+  const [proposalRequestId, setProposalRequestId] = useState<string | null>(null);
+  const [calibrationBaseline, setCalibrationBaseline] = useState<CalibrationBaseline | null>(null);
   const [fills, setFills] = useState<Fill[]>([]);
   const [now, setNow] = useState(Date.now());
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
@@ -99,8 +111,11 @@ export default function App() {
     if (latestState.current && fingerprint(latestState.current) !== fingerprint(next)) setQuote(null);
     if (proposal && proposal.approval && next.policy.policyVersion >= (proposal.calibration?.policyVersion ?? 0)) {
       agentRequest.current = null;
+      setPendingAgentRequest(null);
       storeAgentRequest(null);
       setProposal(null);
+      setProposalRequestId(null);
+      setCalibrationBaseline(null);
     }
     latestState.current = next;
     setState(next);
@@ -210,23 +225,66 @@ export default function App() {
     if (floorError(floor)) return;
     await perform('Running risk agent', async () => {
       setProposal(null);
+      setProposalRequestId(null);
+      setCalibrationBaseline(null);
       const pending = agentRequest.current;
       if (pending && (pending.hardFloor !== floor || pending.forceRefresh !== forceRefresh)) {
         throw new Error('Resolve the existing paid Agent request before changing its inputs.');
       }
       const request = pending ?? { id: crypto.randomUUID(), hardFloor: floor, forceRefresh };
+      const currentPolicy = latestState.current?.policy;
+      const baseline = currentPolicy && currentPolicy.policyVersion > 0
+        ? { shockBps: currentPolicy.shockBps, marketRegime: currentPolicy.marketRegime }
+        : null;
       agentRequest.current = request;
+      setPendingAgentRequest(request);
       storeAgentRequest(request);
       const next = await api.agent(request.id, floor, forceRefresh);
       if (next.decision === 'no_refresh') {
         agentRequest.current = null;
+        setPendingAgentRequest(null);
         storeAgentRequest(null);
+      } else {
+        setProposalRequestId(request.id);
+        setCalibrationBaseline(baseline);
       }
       setProposal(next);
       setNotice({
         text: next.decision === 'proposal_ready'
           ? 'Paid calibration verified. Review the evidence, then approve with the Maker wallet.'
           : 'The deterministic policy check found no refresh requirement.',
+        error: false,
+      });
+    });
+  }
+
+  async function resumeAgent() {
+    const pending = agentRequest.current;
+    if (!pending) return;
+    await perform('Resuming paid calibration', async () => {
+      setProposal(null);
+      setProposalRequestId(null);
+      setCalibrationBaseline(null);
+      floorWasEdited.current = true;
+      setFloor(pending.hardFloor);
+      const currentPolicy = latestState.current?.policy;
+      const baseline = currentPolicy && currentPolicy.policyVersion > 0
+        ? { shockBps: currentPolicy.shockBps, marketRegime: currentPolicy.marketRegime }
+        : null;
+      const next = await api.agent(pending.id, pending.hardFloor, pending.forceRefresh);
+      if (next.decision === 'no_refresh') {
+        agentRequest.current = null;
+        setPendingAgentRequest(null);
+        storeAgentRequest(null);
+      } else {
+        setProposalRequestId(pending.id);
+        setCalibrationBaseline(baseline);
+      }
+      setProposal(next);
+      setNotice({
+        text: next.decision === 'proposal_ready'
+          ? 'Existing paid calibration resumed. Review the evidence, then approve with the Maker wallet.'
+          : 'The existing Agent request found no refresh requirement.',
         error: false,
       });
     });
@@ -323,6 +381,8 @@ export default function App() {
   const policyError = floorError(floor);
   const floorEquals = (value: string) => !policyError && compare(floor, value) === 0;
   const quoteExpired = quote ? Date.parse(quote.expiresAt) <= now : false;
+  const quoteFinalSafe = Boolean(quote?.stressHFAfter
+    && compare(quote.stressHFAfter, quote.hardFloorStressHF) >= 0);
   const hardFloor = state?.policy.hardFloorStressHF === '0' ? DEMO_FLOOR : state?.policy.hardFloorStressHF;
   const belowFloor = state?.stressHF != null && hardFloor != null && compare(state.stressHF, hardFloor) < 0;
   const health = (value: string | null | undefined) => connected && value === null ? 'Not active' : fmt(value, 2, 4);
@@ -360,12 +420,12 @@ export default function App() {
         <section id="position" className="position-section"><div className="section-heading"><h2>Live Aave position</h2><span className="meta-text">Block {state ? fmt(state.blockNumber) : '—'} · fork block {state?.chain.forkBlock ?? '—'}</span></div><div className="balance-grid"><article className="balance-card"><div className="balance-label"><Token symbol="WETH" /><span>WETH collateral</span><span className="balance-type">SUPPLIED</span></div><div className="balance-amount">{fmt(state?.collateral.weth, 4, 8)} <small>WETH</small></div><div className="balance-footer">Aqua virtual balance <strong>{fmt(state?.strategy.aquaBalances.weth, 4, 8)}</strong></div></article><article className="balance-card"><div className="balance-label"><Token symbol="USDC" /><span>USDC collateral</span><span className="balance-type">SUPPLIED</span></div><div className="balance-amount">{fmt(state?.collateral.usdc, 2, 6)} <small>USDC</small></div><div className="balance-footer">Aqua virtual balance <strong>{fmt(state?.strategy.aquaBalances.usdc, 2, 6)}</strong></div></article><article className="balance-card debt-card"><div className="balance-label"><Token symbol="USDC" /><span>USDC debt</span><span className="balance-type">BORROWED</span></div><div className="balance-amount">{fmt(state?.debt.usdc, 2, 6)} <small>USDC</small></div><div className="balance-footer"><span className="amber-dot" />Current Aave oracle valuation</div></article></div></section>
 
         <div className="workspace-grid">
-          <section id="policy" className="panel"><div className="panel-heading"><div><div className="eyebrow">LIVE EVIDENCE + X402</div><h2>Risk Agent proposal</h2></div><Icon name="sliders" /></div><p className="panel-description">The Agent can read evidence and buy one deterministic calibration. It cannot sign Ethereum actions.</p><div className="floor-presets">{[['1.10', 'Demo default'], ['1.20', 'More headroom'], ['1.30', 'Higher floor']].map(([value, label]) => <button type="button" className={`floor-preset ${floorEquals(value) ? 'selected' : ''}`} key={value} disabled={disabled} onClick={() => { floorWasEdited.current = true; setFloor(value); }}><strong>{value}</strong><span>{label}</span></button>)}</div><label className="field-label" htmlFor="floor">Maker hard floor <span>Allowed 1.01–3.00; 1.10 is the demo policy</span></label><div className="policy-input-row"><input id="floor" value={floor} inputMode="decimal" onChange={event => { floorWasEdited.current = true; setFloor(event.target.value); }} disabled={disabled} /><button className="button primary" disabled={disabled || Boolean(policyError) || state?.strategy.state !== 'active'} onClick={() => void runAgent(false)}>{busy === 'Running risk agent' ? 'Agent running…' : 'Assess / buy calibration'}</button>{state && !policyError && ['valid', 'expiring'].includes(state.policy.state) && compare(floor, state.policy.hardFloorStressHF) !== 0 && <button className="button dark" disabled={disabled} onClick={() => void updateFloor()}>Update floor only</button>}</div><p className={policyError ? 'field-error' : 'field-help'}>{policyError ?? 'Changing the Maker floor does not alter the signed market shock.'}</p>
-            {proposal && <div className="quote-result"><div className="result-heading"><strong>{proposal.headline}</strong><span>{proposal.decision}</span></div>{proposal.rationale.map(item => <p key={item} className="field-help">{item}</p>)}{proposal.calibration && proposal.paymentReceipt && proposal.graphEvidence && <dl className="quote-details"><div><dt>Graph observations</dt><dd>{proposal.graphEvidence.observationCount}</dd></div><div><dt>Calibrated WETH shock</dt><dd>{bps(proposal.calibration.shockBps)}</dd></div><div><dt>Market regime / model</dt><dd>{regime(proposal.calibration.marketRegime)} / v{proposal.calibration.modelVersion}</dd></div><div><dt>Evidence blocks</dt><dd>{proposal.calibration.evidenceBlockFrom}–{proposal.calibration.evidenceBlockTo}</dd></div><div><dt>Policy chain window</dt><dd>{proposal.calibration.issuedAt}–{proposal.calibration.validUntil}</dd></div><div><dt>Policy TTL</dt><dd>{proposal.calibration.validUntil - proposal.calibration.issuedAt}s</dd></div><div><dt>Hedera receipt</dt><dd><code>{proposal.paymentReceipt.transaction}</code></dd></div><div><dt>Evidence hash</dt><dd><code>{proposal.calibration.evidenceHash}</code></dd></div></dl>}{proposal.approval && <button className="button primary full-width" disabled={disabled} onClick={() => void submitMakerAction(proposal.approval as MakerAction, 'Approving MarketPolicy', { hardFloor: floor, proposal })}>Approve signed policy in Maker wallet</button>}</div>}
+          <section id="policy" className="panel"><div className="panel-heading"><div><div className="eyebrow">LIVE EVIDENCE + X402</div><h2>Risk Agent proposal</h2></div><Icon name="sliders" /></div><p className="panel-description">The Agent can read evidence and buy one deterministic calibration. It cannot sign Ethereum actions.</p><div className="floor-presets">{[['1.10', 'Demo default'], ['1.20', 'More headroom'], ['1.30', 'Higher floor']].map(([value, label]) => <button type="button" className={`floor-preset ${floorEquals(value) ? 'selected' : ''}`} key={value} disabled={disabled} onClick={() => { floorWasEdited.current = true; setFloor(value); }}><strong>{value}</strong><span>{label}</span></button>)}</div><label className="field-label" htmlFor="floor">Maker hard floor <span>Allowed 1.01–3.00; 1.10 is the demo policy</span></label><div className="policy-input-row"><input id="floor" value={floor} inputMode="decimal" onChange={event => { floorWasEdited.current = true; setFloor(event.target.value); }} disabled={disabled} />{state && !policyError && ['valid', 'expiring'].includes(state.policy.state) && compare(floor, state.policy.hardFloorStressHF) !== 0 && <button className="button dark" disabled={disabled} onClick={() => void updateFloor()}>Update floor only</button>}</div><div className="agent-actions"><button className="button primary" disabled={disabled || Boolean(policyError) || state?.strategy.state !== 'active'} onClick={() => void runAgent(false)}>{busy === 'Running risk agent' ? 'Agent running…' : 'Assess / buy calibration'}</button><button className="button subtle" disabled={disabled || Boolean(policyError) || state?.strategy.state !== 'active'} onClick={() => void runAgent(true)}>{busy === 'Running risk agent' ? 'Refreshing…' : 'Refresh + Buy New Calibration'}</button></div>{pendingAgentRequest && <div className="agent-pending"><div><strong>Existing paid Agent request</strong><span>Resume with floor {pendingAgentRequest.hardFloor} · {pendingAgentRequest.forceRefresh ? 'Refresh + Buy New Calibration' : 'Assess / buy calibration'}</span></div><button className="button dark" disabled={disabled} onClick={() => void resumeAgent()}>Resume existing request</button></div>}<p className={policyError ? 'field-error' : 'field-help'}>{policyError ?? 'Changing the Maker floor does not alter the signed market shock.'}</p>
+            {proposal && <div className="quote-result agent-result"><div className="result-heading"><strong>{proposal.headline}</strong><span>{proposal.decision}</span></div>{proposal.rationale.map(item => <p key={item} className="field-help">{item}</p>)}{proposal.calibration && proposal.paymentReceipt && proposal.graphEvidence && <div className="calibration-story"><section className="proof-card graph-proof"><span className="proof-kicker">THE GRAPH · CALIBRATE</span><strong>Market calibration</strong><div className="delta-grid"><div><span>Market regime</span><b>{calibrationBaseline ? regime(calibrationBaseline.marketRegime) : 'No active policy'} → {regime(proposal.calibration.marketRegime)}</b></div><div><span>WETH shock</span><b>{calibrationBaseline ? bps(calibrationBaseline.shockBps) : '—'} → {bps(proposal.calibration.shockBps)}</b></div></div><small>{proposal.graphEvidence.observationCount} observations · indexed blocks {proposal.calibration.evidenceBlockFrom}–{proposal.calibration.evidenceBlockTo}</small></section><section className="proof-card payment-proof"><div className="proof-card-heading"><span className="proof-kicker">x402 CALIBRATION PAYMENT</span><strong className="paid-badge">PAID</strong></div><strong>Hedera Testnet</strong>{proposal.paymentReceipt.amount && <p>{hbarFromTinybar(proposal.paymentReceipt.amount)} <small>({proposal.paymentReceipt.amount} tinybar)</small></p>}<dl><div><dt>Receipt</dt><dd><code>{proposal.paymentReceipt.transaction}</code></dd></div>{proposalRequestId && <div><dt>Request ID</dt><dd><code>{proposalRequestId}</code></dd></div>}</dl></section><section className="proof-card policy-proof"><span className="proof-kicker">SIGNED MARKET POLICY</span><strong>Policy v{proposal.calibration.policyVersion} · Model v{proposal.calibration.modelVersion}</strong><p>{bps(proposal.calibration.shockBps)} WETH downside · {regime(proposal.calibration.marketRegime)}</p></section><dl className="quote-details secondary-details"><div><dt>Graph market / Aave blocks</dt><dd>{proposal.graphEvidence.marketIndexedBlock} / {proposal.graphEvidence.aaveIndexedBlock}</dd></div><div><dt>Policy chain window</dt><dd>{proposal.calibration.issuedAt}–{proposal.calibration.validUntil}</dd></div><div><dt>Policy TTL</dt><dd>{proposal.calibration.validUntil - proposal.calibration.issuedAt}s</dd></div><div><dt>Evidence hash</dt><dd><code>{proposal.calibration.evidenceHash}</code></dd></div></dl></div>}{proposal.approval && <button className="button primary full-width" disabled={disabled} onClick={() => void submitMakerAction(proposal.approval as MakerAction, 'Approving MarketPolicy', { hardFloor: floor, proposal })}>Approve signed policy in Maker wallet</button>}</div>}
           </section>
 
           <section className="panel quote-panel"><div className="panel-heading"><div><div className="eyebrow">EXACT-IN EXECUTION</div><h2>Quote and fill</h2></div><span className="tiny-badge">qMax FINAL CHECK</span></div><form onSubmit={event => { event.preventDefault(); void getQuote(); }}><label className="field-label" htmlFor="direction">Direction <span>Incoming collateral → outgoing collateral</span></label><div className="direction-control"><select id="direction" value={direction} disabled={disabled} onChange={event => { setDirection(event.target.value as Direction); setQuote(null); }}><option value="weth-in">aWETH in → aUSDC out</option><option value="usdc-in">aUSDC in → aWETH out</option></select></div><label className="field-label" htmlFor="max-input">Maximum input</label><div className="amount-input"><input id="max-input" value={maxInput} inputMode="decimal" onChange={event => { setMaxInput(event.target.value); setQuote(null); }} disabled={disabled} /><span>{inputToken(direction)}</span></div><p className={inputError ? 'field-error' : 'field-help'}>{inputError ?? 'Risk capping may reduce actual input below this maximum.'}</p><label className="field-label" htmlFor="min-output">Minimum output protection</label><div className="amount-input"><input id="min-output" value={minimumOutput} inputMode="decimal" onChange={event => { setMinimumOutput(event.target.value); setQuote(null); }} disabled={disabled} /><span>{outputToken(direction)}</span></div><p className={outputError ? 'field-error' : 'field-help'}>{outputError ?? 'The quote/fill is rejected if final output falls below this value.'}</p><button className="button primary full-width" type="submit" disabled={disabled || !state?.ready || Boolean(inputError) || Boolean(outputError)}>Get executable quote <Icon name="arrow" size={18} /></button></form>
-            <div className={`quote-result ${quote?.status === 'rejected' ? 'rejected' : ''}`} aria-live="polite">{quote ? <><div className="result-heading"><strong>{quote.status === 'rejected' ? 'Quote rejected' : quote.partialFill ? 'Risk-capped partial fill' : 'Full exact-in fill'}</strong><span>{quoteExpired ? 'expired' : `${Math.max(0, Math.ceil((Date.parse(quote.expiresAt) - now) / 1_000))}s`}</span></div><dl className="quote-details"><div><dt>Requested / actual input</dt><dd>{fmt(quote.requestedAmountIn)} / {fmt(quote.actualAmountIn)} {inputToken(direction)}</dd></div><div><dt>Base / final output</dt><dd>{fmt(quote.baseAmountOut)} / <strong>{fmt(quote.finalAmountOut)}</strong> {outputToken(direction)}</dd></div><div><dt>qMax</dt><dd>{fmt(quote.qMax)} {outputToken(direction)}</dd></div><div><dt>StressHF before / after</dt><dd>{health(quote.stressHFBefore)} / {health(quote.stressHFAfter)}</dd></div><div><dt>Policy binding</dt><dd>v{quote.policyVersion} · r{quote.policyRevision}</dd></div></dl>{quote.reason && <p className="field-error">{quote.reason}</p>}<button className="button primary full-width" disabled={disabled || quote.status !== 'ready' || quoteExpired} onClick={() => void fillQuote()}>Execute quoted fill <Icon name="arrow" size={18} /></button></> : <div className="quote-empty"><Icon name="activity" /><div><strong>No quote yet</strong><p>Final output is recomputed from current Aave state and the active signed shock.</p></div></div>}</div>
+            <div className={`quote-result ${quote?.status === 'rejected' ? 'rejected' : ''}`} aria-live="polite">{quote ? <><div className="result-heading"><strong>{quote.status === 'rejected' ? 'Quote rejected' : quote.partialFill ? quote.riskClass === 1 ? 'Risk-capped partial fill' : 'Liquidity-capped partial fill' : 'Full exact-in fill'}</strong><span>{quoteExpired ? 'expired' : `${Math.max(0, Math.ceil((Date.parse(quote.expiresAt) - now) / 1_000))}s`}</span></div><div className="execution-flow"><div className="execution-step"><span>Requested input</span><strong>{fmt(quote.requestedAmountIn)} {inputToken(quote.direction)}</strong></div><div className="execution-step"><span>Base XYC output</span><strong>{fmt(quote.baseAmountOut)} {outputToken(quote.direction)}</strong></div><div className="flow-arrow">↓</div><div className="capacity-hero"><span>SAFE EXECUTABLE CAPACITY — qMax</span><strong>{fmt(quote.qMax)} {outputToken(quote.direction)}</strong>{quote.partialFill && compare(quote.qMax, '0') > 0 && <b>{quote.riskClass === 1 ? 'RISK-CAPPED PARTIAL FILL' : 'LIQUIDITY-CAPPED PARTIAL FILL'}</b>}</div><div className="flow-arrow">↓</div><div className="execution-final"><div className="execution-step"><span>Actual input</span><strong>{fmt(quote.actualAmountIn)} {inputToken(quote.direction)}</strong></div><div className="execution-step"><span>Final output</span><strong>{fmt(quote.finalAmountOut)} {outputToken(quote.direction)}</strong></div></div></div><div className="risk-proof"><div><span>StressHF before</span><strong>{health(quote.stressHFBefore)}</strong></div><div><span>StressHF after</span><strong>{health(quote.stressHFAfter)}</strong></div><div><span>Maker floor</span><strong>{health(quote.hardFloorStressHF)}</strong></div>{quote.status === 'ready' && quoteFinalSafe && <p>Final StressHF ≥ Maker Floor ✓</p>}</div><div className="quote-binding">Policy v{quote.policyVersion} · revision {quote.policyRevision}</div>{quote.reason && <p className="field-error">{quote.reason}</p>}<button className="button primary full-width" disabled={disabled || quote.status !== 'ready' || quoteExpired} onClick={() => void fillQuote()}>Execute quoted fill <Icon name="arrow" size={18} /></button></> : <div className="quote-empty"><Icon name="activity" /><div><strong>No quote yet</strong><p>Final output is recomputed from current Aave state and the active signed shock.</p></div></div>}</div>
           </section>
         </div>
 

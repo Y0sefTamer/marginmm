@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { encodeAbiParameters, encodeFunctionData, keccak256, maxUint256, parseAbi, parseUnits } from 'viem';
-import type { Address, Hex } from 'viem';
+import type { Address, EIP1193Provider, Hex } from 'viem';
 import type { AgentProposal, MakerAction, MakerState } from './api';
-import { validateMakerAction } from './wallet';
+import { validateMakerAction, waitForMakerReceipt } from './wallet';
 import { proposalFixture, stateFixture } from './test/fixtures';
 
 const tokenAbi = parseAbi([
@@ -26,6 +26,27 @@ function action(id: string, to: string, data: `0x${string}`): MakerAction {
 }
 
 describe('Maker transaction firewall', () => {
+  it('confirms a Maker transaction through the same injected provider that broadcast it', async () => {
+    const provider = {
+      request: vi.fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ status: '0x1' }),
+    } as unknown as EIP1193Provider;
+    const wait = vi.fn().mockResolvedValue(undefined);
+
+    await expect(waitForMakerReceipt(provider, `0x${'a'.repeat(64)}`, {
+      timeoutMs: 1_000, pollIntervalMs: 1, pause: wait,
+    })).resolves.toBeUndefined();
+    expect(provider.request).toHaveBeenCalledTimes(2);
+    expect(wait).toHaveBeenCalledWith(1);
+  });
+
+  it('rejects a reverted Maker transaction instead of treating it as confirmed', async () => {
+    const provider = { request: vi.fn().mockResolvedValue({ status: '0x0' }) } as unknown as EIP1193Provider;
+
+    await expect(waitForMakerReceipt(provider, `0x${'b'.repeat(64)}`)).rejects.toThrow('reverted');
+  });
+
   it('accepts only an unlimited approval from the configured aToken to configured Aqua', () => {
     const canonical = action('approve-aweth', stateFixture.contracts.aWETH, encodeFunctionData({
       abi: tokenAbi, functionName: 'approve', args: [addr(stateFixture.contracts.aqua), maxUint256],

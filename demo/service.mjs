@@ -429,7 +429,11 @@ export async function createService(rpc, config, dependencies = {}) {
       result.reason = 'The risk-capped output is below the taker minimum.';
       return result;
     }
-    const deadline = BigInt(block.timestamp) + BigInt(DEMO_DEADLINE_SECONDS);
+    // Anvil executes the fill in its pending block, whose timestamp may be ahead of latest
+    // after the fork has been idle. Bind the taker deadline to that execution timestamp.
+    const pending = await rpc.send('eth_getBlockByNumber', ['pending', false]);
+    if (!pending?.timestamp) throw new ApiError('FORK_UNAVAILABLE', 503);
+    const deadline = BigInt(pending.timestamp) + BigInt(DEMO_DEADLINE_SECONDS);
     const data = await c.router.buildTakerData(
       minimumOut, deadline, capacity.policyVersion, capacity.policyRevision, options,
     );

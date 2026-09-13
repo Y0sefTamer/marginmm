@@ -78,6 +78,9 @@ describe('MarginMM Maker console', () => {
     await userEvent.click(screen.getByRole('button', { name: /Get executable quote/ }));
     expect(api.quote).toHaveBeenCalledWith('weth-in', '5', '1');
     await screen.findByText('Risk-capped partial fill');
+    expect(screen.getByText('SAFE EXECUTABLE CAPACITY — qMax')).toBeInTheDocument();
+    expect(screen.getByText('RISK-CAPPED PARTIAL FILL')).toBeInTheDocument();
+    expect(screen.getByText('Final StressHF ≥ Maker Floor ✓')).toBeInTheDocument();
     const execute = screen.getByRole('button', { name: /Execute quoted fill/ });
     fireEvent.click(execute);
     fireEvent.click(execute);
@@ -85,6 +88,19 @@ describe('MarginMM Maker console', () => {
     await act(async () => pending.resolve(fillFixture));
     await screen.findByText(fillFixture.transactionHash);
     expect(screen.getByText('Exact-In fill confirmed from the current onchain risk state.')).toBeInTheDocument();
+  });
+
+  it('distinguishes an Aqua liquidity cap from a MarginMM risk cap', async () => {
+    const liquidityQuote = structuredClone(quoteFixture);
+    liquidityQuote.riskClass = 2;
+    vi.mocked(api.quote).mockResolvedValue(liquidityQuote);
+    await connected();
+    await userEvent.clear(screen.getByLabelText('Maximum input'));
+    await userEvent.type(screen.getByLabelText('Maximum input'), '5');
+    await userEvent.click(screen.getByRole('button', { name: /Get executable quote/ }));
+    expect(api.quote).toHaveBeenCalledWith('weth-in', '5', '1');
+    await screen.findByText('LIQUIDITY-CAPPED PARTIAL FILL');
+    expect(screen.queryByText('RISK-CAPPED PARTIAL FILL')).not.toBeInTheDocument();
   });
 
   it('accepts a safe final receipt recomputed from current Aave state', async () => {
@@ -147,13 +163,17 @@ describe('MarginMM Maker console', () => {
     await userEvent.click(screen.getByRole('button', { name: /Assess.*buy calibration/ }));
     expect(api.agent).toHaveBeenCalledWith(expect.any(String), '1.10', false);
     await screen.findByText('A fresh policy is ready for Maker review.');
-    expect(screen.getByText('24')).toBeInTheDocument();
+    expect(screen.getByText(/24 observations/)).toBeInTheDocument();
     expect(screen.getAllByText('12.40%').length).toBeGreaterThan(0);
     expect(screen.getAllByText(/high volatility/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText('25913300–25913340').length).toBeGreaterThan(0);
+    expect(screen.getByText(/indexed blocks 25913300–25913340/)).toBeInTheDocument();
     expect(screen.getByText(/Evidence source: The Graph/)).toBeInTheDocument();
-    expect(screen.getByText(stateFixture.policy.evidenceHash!)).toBeInTheDocument();
+    expect(screen.getByText(proposalFixture.calibration!.evidenceHash)).toBeInTheDocument();
     expect(screen.getByText('0.0.100@4000000000.000000000')).toBeInTheDocument();
+    expect(screen.getByText('x402 CALIBRATION PAYMENT')).toBeInTheDocument();
+    expect(screen.getByText('PAID')).toBeInTheDocument();
+    expect(screen.getByText('Hedera Testnet')).toBeInTheDocument();
+    expect(screen.getByText('0.001 HBAR')).toBeInTheDocument();
     const stateReadsBeforeApproval = vi.mocked(api.state).mock.calls.length;
     await userEvent.click(screen.getByRole('button', { name: 'Approve signed policy in Maker wallet' }));
     expect(api.state).toHaveBeenCalledTimes(stateReadsBeforeApproval + 2);
@@ -161,6 +181,27 @@ describe('MarginMM Maker console', () => {
       stateFixture, proposalFixture.approval,
       { hardFloor: '1.10', proposal: proposalFixture },
     );
+  });
+
+  it('force-refreshes a valid policy only through the explicit paid action', async () => {
+    await connected();
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh + Buy New Calibration' }));
+    expect(api.agent).toHaveBeenCalledWith(expect.any(String), '1.10', true);
+    await screen.findByText('THE GRAPH · CALIBRATE');
+    expect(screen.getByText('12.40% → 12.40%')).toBeInTheDocument();
+  });
+
+  it('resumes a stored paid Agent request without creating a new request', async () => {
+    const request = {
+      id: '22222222-2222-4222-8222-222222222222', hardFloor: '1.20', forceRefresh: true,
+    };
+    sessionStorage.setItem('marginmm.agent-request.v1', JSON.stringify(request));
+    await connected();
+    expect(screen.getByRole('button', { name: 'Resume existing request' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Resume existing request' }));
+    expect(api.agent).toHaveBeenCalledWith(request.id, request.hardFloor, request.forceRefresh);
+    await screen.findByText('A fresh policy is ready for Maker review.');
+    expect(screen.getByText('Existing paid calibration resumed. Review the evidence, then approve with the Maker wallet.')).toBeInTheDocument();
   });
 
   it('refreshes chain time and refuses an expired policy before filling', async () => {
