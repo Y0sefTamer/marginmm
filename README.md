@@ -4,7 +4,7 @@
 
 MarginMM lets a maker quote two-way liquidity in `aWETH` / `aUSDC` without ever quoting past the safety of the Aave account behind those aTokens. Every quote is derived live from the maker's actual Aave balances, debt, liquidation thresholds, index values, and oracle prices. Every fill re-checks that math at settlement time and reverts the entire trade if the resulting position would violate Aave's own Health Factor (HF) or the maker's own, stricter **StressHF** policy.
 
-Built for ETHGlobal. Team: Mohamed Tamer, Yosef Tamer, Ziad Kotry.
+
 
 ## The problem
 
